@@ -31,8 +31,9 @@ class ShiftExchange:
     from_username: str
     to_user_id: int
     to_username: str
-    shift_time: str
-    details: str
+    shift: str
+    date: str
+    notes: str
     created_at: datetime
     status: str
 
@@ -86,11 +87,24 @@ class AttendanceDatabase:
                     to_username TEXT NOT NULL,
                     shift_time TEXT NOT NULL,
                     details TEXT NOT NULL,
+                    shift TEXT,
+                    exchange_date TEXT,
+                    notes TEXT,
                     created_at TEXT NOT NULL,
                     status TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(shift_exchanges)").fetchall()
+            }
+            if "shift" not in columns:
+                conn.execute("ALTER TABLE shift_exchanges ADD COLUMN shift TEXT")
+            if "exchange_date" not in columns:
+                conn.execute("ALTER TABLE shift_exchanges ADD COLUMN exchange_date TEXT")
+            if "notes" not in columns:
+                conn.execute("ALTER TABLE shift_exchanges ADD COLUMN notes TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_shift_exchanges_status_created
@@ -132,14 +146,23 @@ class AttendanceDatabase:
         )
 
     def _row_to_shift_exchange(self, row: sqlite3.Row) -> ShiftExchange:
+        shift = row["shift"] if "shift" in row.keys() and row["shift"] else row["shift_time"]
+        exchange_date = (
+            row["exchange_date"]
+            if "exchange_date" in row.keys() and row["exchange_date"]
+            else row["details"]
+        )
+        notes = row["notes"] if "notes" in row.keys() and row["notes"] else ""
+
         return ShiftExchange(
             id=row["id"],
             from_user_id=row["from_user_id"],
             from_username=row["from_username"],
             to_user_id=row["to_user_id"],
             to_username=row["to_username"],
-            shift_time=row["shift_time"],
-            details=row["details"],
+            shift=shift,
+            date=exchange_date,
+            notes=notes,
             created_at=self._parse_timestamp(row["created_at"]),
             status=row["status"],
         )
@@ -236,15 +259,16 @@ class AttendanceDatabase:
         from_username: str,
         to_user_id: int,
         to_username: str,
-        shift_time: str,
-        details: str,
+        shift: str,
+        date: str,
+        notes: str,
         created_at: datetime,
-        status: str = "pending",
+        status: str = "exchanged",
     ) -> ShiftExchange:
-        if not shift_time.strip():
-            raise ValueError("Shift time cannot be empty.")
-        if not details.strip():
-            raise ValueError("Details cannot be empty.")
+        if not shift.strip():
+            raise ValueError("Shift cannot be empty.")
+        if not date.strip():
+            raise ValueError("Date cannot be empty.")
         if status.strip() == "":
             raise ValueError("Status cannot be empty.")
 
@@ -258,18 +282,24 @@ class AttendanceDatabase:
                     to_username,
                     shift_time,
                     details,
+                    shift,
+                    exchange_date,
+                    notes,
                     created_at,
                     status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     from_user_id,
                     from_username,
                     to_user_id,
                     to_username,
-                    shift_time.strip(),
-                    details.strip(),
+                    shift.strip(),
+                    date.strip(),
+                    shift.strip(),
+                    date.strip(),
+                    notes.strip(),
                     self._format_timestamp(created_at),
                     status.strip(),
                 ),
@@ -285,6 +315,9 @@ class AttendanceDatabase:
                     to_username,
                     shift_time,
                     details,
+                    shift,
+                    exchange_date,
+                    notes,
                     created_at,
                     status
                 FROM shift_exchanges
@@ -294,7 +327,7 @@ class AttendanceDatabase:
             ).fetchone()
 
         if row is None:
-            raise RuntimeError("Failed to create shift exchange request.")
+            raise RuntimeError("Failed to create shift exchange.")
 
         exchange = self._row_to_shift_exchange(row)
         logger.info(

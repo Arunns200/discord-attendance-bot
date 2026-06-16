@@ -186,19 +186,20 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
 
     @bot.tree.command(
         name="exchange",
-        description="Request a shift exchange with another teammate (records it + posts an embed).",
+        description="Record a shift exchange with a teammate (records it + posts an embed).",
     )
     async def exchange(
         interaction: discord.Interaction,
         teammate: discord.Member,
-        shift_time: str,
-        details: str,
+        shift: str,
+        date: str,
+        notes: str = "",
     ) -> None:
         assert interaction.user is not None
 
         if teammate.bot:
             await interaction.response.send_message(
-                embed=error_embed("Invalid Teammate", "You cannot request a shift exchange with a bot."),
+                embed=error_embed("Invalid Teammate", "You cannot exchange shifts with a bot."),
                 ephemeral=True,
             )
             return
@@ -218,13 +219,14 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
                 from_username=str(interaction.user),
                 to_user_id=teammate.id,
                 to_username=str(teammate),
-                shift_time=shift_time,
-                details=details,
+                shift=shift,
+                date=date,
+                notes=notes,
                 created_at=created_at,
             )
         except ValueError as exc:
             await interaction.response.send_message(
-                embed=error_embed("Exchange Not Recorded", str(exc)),
+                embed=error_embed("Exchange Not Saved", str(exc)),
                 ephemeral=True,
             )
             return
@@ -233,22 +235,24 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
             await interaction.response.send_message(
                 embed=error_embed(
                     "Exchange Failed",
-                    "Something went wrong while recording your shift exchange request.",
+                    "Something went wrong while recording your shift exchange.",
                 ),
                 ephemeral=True,
             )
             return
 
         embed = discord.Embed(
-            title="🔁 Shift Exchange Request",
+            title="🔁 Shift Exchanged",
             color=EMBED_COLOR_EXCHANGE,
             timestamp=to_ist(exchange_row.created_at),
         )
         embed.add_field(name="From", value=f"{interaction.user.mention} (`{exchange_row.from_username}`)", inline=False)
         embed.add_field(name="To", value=f"{teammate.mention} (`{exchange_row.to_username}`)", inline=False)
-        embed.add_field(name="Shift Time (IST)", value=shift_time.strip(), inline=False)
-        embed.add_field(name="Details", value=details.strip(), inline=False)
-        embed.set_footer(text=f"Request ID: {exchange_row.id} • Status: {exchange_row.status}")
+        embed.add_field(name="Shift", value=shift.strip(), inline=False)
+        embed.add_field(name="Date", value=date.strip(), inline=False)
+        if notes.strip():
+            embed.add_field(name="Notes", value=notes.strip(), inline=False)
+        embed.set_footer(text=f"Exchange ID: {exchange_row.id} • Status: {exchange_row.status}")
 
         await interaction.response.send_message(embed=embed)
 
