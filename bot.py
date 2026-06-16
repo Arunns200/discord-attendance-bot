@@ -33,6 +33,7 @@ EMBED_COLOR_LOGIN = discord.Color.green()
 EMBED_COLOR_LOGOUT = discord.Color.red()
 EMBED_COLOR_STATUS = discord.Color.blurple()
 EMBED_COLOR_ERROR = discord.Color.orange()
+EMBED_COLOR_EXCHANGE = discord.Color.gold()
 
 
 def format_duration(start: datetime, end: datetime) -> str:
@@ -180,6 +181,74 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
                     value=f"Login Time: {format_ist(session.login_at)}",
                     inline=False,
                 )
+
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(
+        name="exchange",
+        description="Request a shift exchange with another teammate (records it + posts an embed).",
+    )
+    async def exchange(
+        interaction: discord.Interaction,
+        teammate: discord.Member,
+        shift_time: str,
+        details: str,
+    ) -> None:
+        assert interaction.user is not None
+
+        if teammate.bot:
+            await interaction.response.send_message(
+                embed=error_embed("Invalid Teammate", "You cannot request a shift exchange with a bot."),
+                ephemeral=True,
+            )
+            return
+
+        if teammate.id == interaction.user.id:
+            await interaction.response.send_message(
+                embed=error_embed("Invalid Teammate", "You cannot request a shift exchange with yourself."),
+                ephemeral=True,
+            )
+            return
+
+        created_at = utc_now()
+
+        try:
+            exchange_row = bot.database.create_shift_exchange(
+                from_user_id=interaction.user.id,
+                from_username=str(interaction.user),
+                to_user_id=teammate.id,
+                to_username=str(teammate),
+                shift_time=shift_time,
+                details=details,
+                created_at=created_at,
+            )
+        except ValueError as exc:
+            await interaction.response.send_message(
+                embed=error_embed("Exchange Not Recorded", str(exc)),
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            logger.exception("Failed to create shift exchange for user %s", interaction.user.id)
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Exchange Failed",
+                    "Something went wrong while recording your shift exchange request.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(
+            title="🔁 Shift Exchange Request",
+            color=EMBED_COLOR_EXCHANGE,
+            timestamp=to_ist(exchange_row.created_at),
+        )
+        embed.add_field(name="From", value=f"{interaction.user.mention} (`{exchange_row.from_username}`)", inline=False)
+        embed.add_field(name="To", value=f"{teammate.mention} (`{exchange_row.to_username}`)", inline=False)
+        embed.add_field(name="Shift Time (IST)", value=shift_time.strip(), inline=False)
+        embed.add_field(name="Details", value=details.strip(), inline=False)
+        embed.set_footer(text=f"Request ID: {exchange_row.id} • Status: {exchange_row.status}")
 
         await interaction.response.send_message(embed=embed)
 
