@@ -153,6 +153,7 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
     async def status(interaction: discord.Interaction) -> None:
         try:
             sessions = bot.database.list_active_sessions()
+            exchanges = bot.database.list_shift_exchanges(limit=5)
         except Exception:
             logger.exception("Failed to fetch active sessions")
             await interaction.response.send_message(
@@ -163,7 +164,7 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
 
         embed = discord.Embed(
             title="📋 Attendance Status",
-            description="Currently logged-in users",
+            description="Currently logged-in users and recent shift exchanges",
             color=EMBED_COLOR_STATUS,
             timestamp=to_ist(utc_now()),
         )
@@ -171,7 +172,11 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         if not sessions:
             embed.add_field(
                 name="No Active Sessions",
-                value="Nobody is currently logged in.",
+                value=(
+                    "Nobody is currently logged in.\n\n"
+                    "If you *just* used `/login` and still see this, it usually means the bot restarted "
+                    "and is pointing at a fresh database (check Railway volume mount at `/app/data`)."
+                ),
                 inline=False,
             )
         else:
@@ -181,6 +186,25 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
                     value=f"Login Time: {format_ist(session.login_at)}",
                     inline=False,
                 )
+
+        if exchanges:
+            lines: list[str] = []
+            for ex in exchanges:
+                # Keep this compact to avoid embed limits.
+                lines.append(
+                    f"- **{ex.date}** • **{ex.shift}** • {ex.from_username} → {ex.to_username} (ID: {ex.id})"
+                )
+            embed.add_field(
+                name="Recent Shift Exchanges",
+                value="\n".join(lines),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Recent Shift Exchanges",
+                value="No shift exchanges recorded yet.",
+                inline=False,
+            )
 
         await interaction.response.send_message(embed=embed)
 

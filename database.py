@@ -351,6 +351,9 @@ class AttendanceDatabase:
                     to_username,
                     shift_time,
                     details,
+                    shift,
+                    exchange_date,
+                    notes,
                     created_at,
                     status
                 FROM shift_exchanges
