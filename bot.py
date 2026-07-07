@@ -29,8 +29,6 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DATABASE_PATH = str(default_database_path())
 
-INSTANCE_LABEL = "Railway" if os.getenv("RAILWAY_ENVIRONMENT") else "Local"
-
 EMBED_COLOR_LOGIN = discord.Color.green()
 EMBED_COLOR_LOGOUT = discord.Color.red()
 EMBED_COLOR_STATUS = discord.Color.blurple()
@@ -112,7 +110,6 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         )
         embed.add_field(name="Username", value=session.username, inline=False)
         embed.add_field(name="Timestamp", value=format_ist(session.login_at), inline=False)
-        embed.set_footer(text=f"Instance: {INSTANCE_LABEL}")
 
         await interaction.response.send_message(embed=embed)
 
@@ -154,7 +151,6 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
             value="Don't forget to set your **Zoho SalesIQ** status to **Busy**.",
             inline=False,
         )
-        embed.set_footer(text=f"Instance: {INSTANCE_LABEL}")
 
         await interaction.response.send_message(embed=embed)
 
@@ -211,7 +207,6 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
                 inline=False,
             )
 
-        embed.set_footer(text=f"Instance: {INSTANCE_LABEL}")
         await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(
@@ -282,7 +277,7 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         embed.add_field(name="Date", value=date.strip(), inline=False)
         if notes.strip():
             embed.add_field(name="Notes", value=notes.strip(), inline=False)
-        embed.set_footer(text=f"Exchange ID: {exchange_row.id} • Status: {exchange_row.status} • Instance: {INSTANCE_LABEL}")
+        embed.set_footer(text=f"Exchange ID: {exchange_row.id} • Status: {exchange_row.status}")
 
         await interaction.response.send_message(embed=embed)
 
