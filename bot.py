@@ -6,12 +6,13 @@ import logging
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from config import default_database_path
+from config import default_database_path, log_database_setup
 from database import AttendanceDatabase
 from time_utils import format_ist, to_ist, utc_now
 
@@ -306,7 +307,10 @@ def main() -> None:
         sys.exit(1)
 
     database = AttendanceDatabase(DATABASE_PATH)
-    logger.info("Using database at %s", DATABASE_PATH)
+    log_database_setup(Path(DATABASE_PATH))
+
+    active_count = len(database.list_active_sessions())
+    logger.info("Active sessions in database: %s", active_count)
 
     bot = create_bot(database=database, guild_id=guild_id)
 
