@@ -29,6 +29,8 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DATABASE_PATH = str(default_database_path())
 
+INSTANCE_LABEL = "Railway" if os.getenv("RAILWAY_ENVIRONMENT") else "Local"
+
 EMBED_COLOR_LOGIN = discord.Color.green()
 EMBED_COLOR_LOGOUT = discord.Color.red()
 EMBED_COLOR_STATUS = discord.Color.blurple()
@@ -110,6 +112,7 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         )
         embed.add_field(name="Username", value=session.username, inline=False)
         embed.add_field(name="Timestamp", value=format_ist(session.login_at), inline=False)
+        embed.set_footer(text=f"Instance: {INSTANCE_LABEL}")
 
         await interaction.response.send_message(embed=embed)
 
@@ -146,6 +149,12 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         embed.add_field(name="Login Time", value=format_ist(session.login_at), inline=False)
         embed.add_field(name="Logout Time", value=format_ist(logout_at), inline=False)
         embed.add_field(name="Total Duration", value=duration, inline=False)
+        embed.add_field(
+            name="⚠️ Reminder",
+            value="Don't forget to set your **Zoho SalesIQ** status to **Busy**.",
+            inline=False,
+        )
+        embed.set_footer(text=f"Instance: {INSTANCE_LABEL}")
 
         await interaction.response.send_message(embed=embed)
 
@@ -172,11 +181,7 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         if not sessions:
             embed.add_field(
                 name="No Active Sessions",
-                value=(
-                    "Nobody is currently logged in.\n\n"
-                    "If you *just* used `/login` and still see this, it usually means the bot restarted "
-                    "and is pointing at a fresh database (check Railway volume mount at `/app/data`)."
-                ),
+                value="Nobody is currently logged in.",
                 inline=False,
             )
         else:
@@ -206,6 +211,7 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
                 inline=False,
             )
 
+        embed.set_footer(text=f"Instance: {INSTANCE_LABEL}")
         await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(
@@ -276,7 +282,7 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         embed.add_field(name="Date", value=date.strip(), inline=False)
         if notes.strip():
             embed.add_field(name="Notes", value=notes.strip(), inline=False)
-        embed.set_footer(text=f"Exchange ID: {exchange_row.id} • Status: {exchange_row.status}")
+        embed.set_footer(text=f"Exchange ID: {exchange_row.id} • Status: {exchange_row.status} • Instance: {INSTANCE_LABEL}")
 
         await interaction.response.send_message(embed=embed)
 
