@@ -129,7 +129,7 @@ def build_board_embed(
     unclaimed = sum(1 for a in assignments if a.user_id is None)
     embed.add_field(name="Unclaimed", value=str(unclaimed), inline=True)
     embed.add_field(name="Claimed", value=str(len(assignments) - unclaimed), inline=True)
-    embed.set_footer(text=f"Board ID: {board.id} • /claim • /release • /reassign • /board end")
+    embed.set_footer(text=f"Board ID: {board.id} • /split • /assign • /claim • /board end")
     return embed
 
 
@@ -200,7 +200,7 @@ def create_bot(
                     "Attendance logs are only allowed in the shift log channel.\n"
                     f"Please use <#{bot.shift_log_channel_id}> for "
                     "`/login`, `/logout`, `/status`, `/exchange`, `/board`, "
-                    "`/claim`, `/release`, and `/reassign`."
+                    "`/split`, `/assign`, `/claim`, `/release`, and `/reassign`."
                 ),
             ),
             ephemeral=True,
@@ -220,6 +220,32 @@ def create_bot(
             if len(choices) >= 25:
                 break
         return choices
+
+    def require_active_board():
+        board = bot.database.get_active_work_board()
+        if board is None:
+            raise ValueError("No active work board. Start one with `/board start`.")
+        return board
+
+    def assign_member_to_seat(
+        *,
+        board_id: int,
+        seat: str,
+        member: discord.Member,
+        notes: str = "",
+        overwrite: bool = True,
+    ) -> None:
+        if member.bot:
+            raise ValueError("You cannot assign a seat to a bot.")
+        bot.database.assign_work_seat(
+            board_id=board_id,
+            seat=seat,
+            user_id=member.id,
+            username=str(member),
+            assigned_at=utc_now(),
+            notes=notes,
+            overwrite=overwrite,
+        )
 
     @bot.tree.command(name="login", description="Record your login time and start an attendance session.")
     async def login(interaction: discord.Interaction) -> None:
@@ -474,9 +500,10 @@ def create_bot(
         embed.add_field(
             name="How to use",
             value=(
-                "Claim: `/claim seat:Mantis`\n"
-                "Release: `/release seat:Mantis`\n"
-                "Reassign: `/reassign seat:Zendesk user:@teammate`\n"
+                "Assign 3 at once: `/assign seat1:Mantis user1:@A seat2:Zendesk user2:@B seat3:SalesIQ user3:@C`\n"
+                "Or by name: `/split mantis:@A zendesk:@B salesiq:@C`\n"
+                "Self pick-up: `/claim seat:Mantis`\n"
+                "Free a seat: `/release seat:Mantis`\n"
                 "Show: `/board show` · End: `/board end`"
             ),
             inline=False,
@@ -546,7 +573,225 @@ def create_bot(
 
     bot.tree.add_command(board_group)
 
-    @bot.tree.command(name="claim", description="Claim a seat on the active work board.")
+    @bot.tree.command(
+        name="split",
+        description="Enter who should work each seat. Leave blank seats for others to /claim.",
+    )
+    @app_commands.describe(
+        mantis="Who should work Mantis",
+        zendesk="Who should work Zendesk",
+        salesiq="Who should work SalesIQ",
+        escalations="Who should work Escalations",
+    )
+    async def split(
+        interaction: discord.Interaction,
+        mantis: discord.Member | None = None,
+        zendesk: discord.Member | None = None,
+        salesiq: discord.Member | None = None,
+        escalations: discord.Member | None = None,
+    ) -> None:
+        assert interaction.user is not None
+
+        if not await ensure_shift_log_channel(interaction):
+            return
+
+        planned: list[tuple[str, discord.Member]] = []
+        for seat_name, member in (
+            ("Mantis", mantis),
+            ("Zendesk", zendesk),
+            ("SalesIQ", salesiq),
+            ("Escalations", escalations),
+        ):
+            if member is None:
+                continue
+            resolved = resolve_seat_name(seat_name, bot.board_seats)
+            if resolved is None:
+                continue
+            planned.append((resolved, member))
+
+        if not planned:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Nothing To Set",
+                    "Pick at least one person, e.g. `/split mantis:@you zendesk:@teammate`.\n"
+                    "Leave seats blank so others can `/claim` them.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            board = require_active_board()
+            mentions: list[str] = []
+            for seat_name, member in planned:
+                assign_member_to_seat(
+                    board_id=board.id,
+                    seat=seat_name,
+                    member=member,
+                    overwrite=True,
+                )
+                mentions.append(f"**{seat_name}** → {member.mention}")
+            assignments = bot.database.list_work_assignments(board.id)
+        except ValueError as exc:
+            await interaction.response.send_message(
+                embed=error_embed("Split Failed", str(exc)),
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            logger.exception("Failed to split work board for user %s", interaction.user.id)
+            await interaction.response.send_message(
+                embed=error_embed("Split Failed", "Something went wrong while setting the board."),
+                ephemeral=True,
+            )
+            return
+
+        embed = build_board_embed(board, assignments, title="🗂️ Shift Split Updated")
+        await interaction.response.send_message(
+            content="Work split:\n" + "\n".join(mentions),
+            embed=embed,
+        )
+
+    @bot.tree.command(
+        name="assign",
+        description="Assign up to 3 seats to 3 people in one command.",
+    )
+    @app_commands.describe(
+        seat1="First seat, e.g. Mantis",
+        user1="Person for seat 1",
+        seat2="Second seat, e.g. Zendesk (optional)",
+        user2="Person for seat 2 (optional)",
+        seat3="Third seat, e.g. SalesIQ (optional)",
+        user3="Person for seat 3 (optional)",
+        notes="Optional note applied to all assignments in this command",
+    )
+    @app_commands.autocomplete(seat1=seat_autocomplete, seat2=seat_autocomplete, seat3=seat_autocomplete)
+    async def assign(
+        interaction: discord.Interaction,
+        seat1: str,
+        user1: discord.Member,
+        seat2: str | None = None,
+        user2: discord.Member | None = None,
+        seat3: str | None = None,
+        user3: discord.Member | None = None,
+        notes: str = "",
+    ) -> None:
+        await _assign_seat_command(
+            interaction,
+            pairs=[
+                (seat1, user1),
+                (seat2, user2),
+                (seat3, user3),
+            ],
+            notes=notes,
+        )
+
+    async def _assign_seat_command(
+        interaction: discord.Interaction,
+        *,
+        pairs: list[tuple[str | None, discord.Member | None]],
+        notes: str = "",
+    ) -> None:
+        assert interaction.user is not None
+
+        if not await ensure_shift_log_channel(interaction):
+            return
+
+        planned: list[tuple[str, discord.Member]] = []
+        seen_seats: set[str] = set()
+
+        for index, (seat_raw, member) in enumerate(pairs, start=1):
+            seat_text = (seat_raw or "").strip()
+            if not seat_text and member is None:
+                continue
+            if seat_text and member is None:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Missing Person",
+                        f"You set `seat{index}` but not `user{index}`. Pick who should work that seat.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            if member is not None and not seat_text:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Missing Seat",
+                        f"You set `user{index}` but not `seat{index}`. Pick which seat they should work.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            assert member is not None
+            resolved = resolve_seat_name(seat_text, bot.board_seats)
+            if resolved is None:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Unknown Seat",
+                        f"`{seat_text}` is not a configured seat.\nSeats: {', '.join(bot.board_seats)}",
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            key = resolved.casefold()
+            if key in seen_seats:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Duplicate Seat",
+                        f"You listed **{resolved}** more than once in the same command.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            seen_seats.add(key)
+            planned.append((resolved, member))
+
+        if not planned:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Nothing To Assign",
+                    "Example: `/assign seat1:Mantis user1:@A seat2:Zendesk user2:@B seat3:SalesIQ user3:@C`",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            board = require_active_board()
+            mentions: list[str] = []
+            for seat_name, member in planned:
+                assign_member_to_seat(
+                    board_id=board.id,
+                    seat=seat_name,
+                    member=member,
+                    notes=notes,
+                    overwrite=True,
+                )
+                mentions.append(f"**{seat_name}** → {member.mention}")
+            assignments = bot.database.list_work_assignments(board.id)
+        except ValueError as exc:
+            await interaction.response.send_message(
+                embed=error_embed("Assign Failed", str(exc)),
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            logger.exception("Failed to assign seats for user %s", interaction.user.id)
+            await interaction.response.send_message(
+                embed=error_embed("Assign Failed", "Something went wrong while assigning seats."),
+                ephemeral=True,
+            )
+            return
+
+        embed = build_board_embed(board, assignments, title="🗂️ Assignments Updated")
+        await interaction.response.send_message(
+            content="Assigned:\n" + "\n".join(mentions),
+            embed=embed,
+        )
+
+    @bot.tree.command(name="claim", description="Claim an open seat for yourself.")
     @app_commands.describe(seat="Seat to claim, e.g. Mantis or Zendesk", notes="Optional note")
     @app_commands.autocomplete(seat=seat_autocomplete)
     async def claim(interaction: discord.Interaction, seat: str, notes: str = "") -> None:
@@ -567,17 +812,7 @@ def create_bot(
             return
 
         try:
-            board = bot.database.get_active_work_board()
-            if board is None:
-                await interaction.response.send_message(
-                    embed=error_embed(
-                        "No Active Board",
-                        "Start a board first with `/board start`.",
-                    ),
-                    ephemeral=True,
-                )
-                return
-
+            board = require_active_board()
             bot.database.assign_work_seat(
                 board_id=board.id,
                 seat=resolved,
@@ -629,17 +864,7 @@ def create_bot(
             return
 
         try:
-            board = bot.database.get_active_work_board()
-            if board is None:
-                await interaction.response.send_message(
-                    embed=error_embed(
-                        "No Active Board",
-                        "There is no active work board.",
-                    ),
-                    ephemeral=True,
-                )
-                return
-
+            board = require_active_board()
             bot.database.release_work_seat(board_id=board.id, seat=resolved)
             assignments = bot.database.list_work_assignments(board.id)
         except ValueError as exc:
@@ -662,7 +887,10 @@ def create_bot(
             embed=embed,
         )
 
-    @bot.tree.command(name="reassign", description="Assign a seat to a teammate (overwrites current owner).")
+    @bot.tree.command(
+        name="reassign",
+        description="Move one seat to someone else.",
+    )
     @app_commands.describe(
         seat="Seat to assign, e.g. Zendesk",
         user="Teammate who should own this seat",
@@ -675,69 +903,10 @@ def create_bot(
         user: discord.Member,
         notes: str = "",
     ) -> None:
-        assert interaction.user is not None
-
-        if not await ensure_shift_log_channel(interaction):
-            return
-
-        if user.bot:
-            await interaction.response.send_message(
-                embed=error_embed("Invalid User", "You cannot assign a seat to a bot."),
-                ephemeral=True,
-            )
-            return
-
-        resolved = resolve_seat_name(seat, bot.board_seats)
-        if resolved is None:
-            await interaction.response.send_message(
-                embed=error_embed(
-                    "Unknown Seat",
-                    f"`{seat}` is not a configured seat.\nSeats: {', '.join(bot.board_seats)}",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        try:
-            board = bot.database.get_active_work_board()
-            if board is None:
-                await interaction.response.send_message(
-                    embed=error_embed(
-                        "No Active Board",
-                        "Start a board first with `/board start`.",
-                    ),
-                    ephemeral=True,
-                )
-                return
-
-            bot.database.assign_work_seat(
-                board_id=board.id,
-                seat=resolved,
-                user_id=user.id,
-                username=str(user),
-                assigned_at=utc_now(),
-                notes=notes,
-                overwrite=True,
-            )
-            assignments = bot.database.list_work_assignments(board.id)
-        except ValueError as exc:
-            await interaction.response.send_message(
-                embed=error_embed("Reassign Failed", str(exc)),
-                ephemeral=True,
-            )
-            return
-        except Exception:
-            logger.exception("Failed to reassign seat for user %s", interaction.user.id)
-            await interaction.response.send_message(
-                embed=error_embed("Reassign Failed", "Something went wrong while reassigning the seat."),
-                ephemeral=True,
-            )
-            return
-
-        embed = build_board_embed(board, assignments)
-        await interaction.response.send_message(
-            content=f"**{resolved}** → {user.mention}",
-            embed=embed,
+        await _assign_seat_command(
+            interaction,
+            pairs=[(seat, user)],
+            notes=notes,
         )
 
     return bot

@@ -9,7 +9,10 @@ A production-ready Discord bot for tracking user login and logout times with sla
 - `/status` — list all currently logged-in users
 - `/exchange` — record a shift handoff with a teammate
 - `/board start|show|end` — shared shift work board (who owns which queue)
-- `/claim` / `/release` / `/reassign` — claim or move seats like Mantis / Zendesk
+- `/assign` — assign up to 3 seats to 3 people in one command
+- `/split` — set who works Mantis / Zendesk / etc. by seat name
+- `/claim` / `/release` — pick up or free an open seat
+- `/reassign` — move one seat to someone else
 - SQLite storage with automatic schema creation
 - Timezone-aware timestamps (stored in UTC, displayed in IST)
 - Structured logging
@@ -131,11 +134,14 @@ In your server, type `/` and run:
 
 ### Shift work board
 
-When multiple people share a shift, start a board and claim seats so Discord shows who owns each queue:
+When multiple people share a shift, start a board so Discord shows who owns each queue:
 
 1. `/board start label:Night shift`
-2. Each person `/claim seat:Mantis` (or Zendesk, SalesIQ, …)
-3. Mid-shift moves: `/reassign seat:Zendesk user:@teammate` or `/release seat:Mantis`
+2. Either:
+   - **3 people at once:** `/assign seat1:Mantis user1:@A seat2:Zendesk user2:@B seat3:SalesIQ user3:@C`
+   - **By seat name:** `/split mantis:@A zendesk:@B salesiq:@C` (leave blank for open seats)
+   - **Self pick-up:** `/claim seat:Mantis`
+3. Free a seat with `/release seat:Mantis` if someone needs to switch
 4. `/board show` anytime · `/board end` when the shift is over
 
 Seat names come from `BOARD_SEATS`. Changing that env var affects **new** boards only.
