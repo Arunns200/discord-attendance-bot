@@ -7,6 +7,9 @@ A production-ready Discord bot for tracking user login and logout times with sla
 - `/login` — start an attendance session and post a login embed
 - `/logout` — end your session, calculate duration, and post a logout embed
 - `/status` — list all currently logged-in users
+- `/exchange` — record a shift handoff with a teammate
+- `/board start|show|end` — shared shift work board (who owns which queue)
+- `/claim` / `/release` / `/reassign` — claim or move seats like Mantis / Zendesk
 - SQLite storage with automatic schema creation
 - Timezone-aware timestamps (stored in UTC, displayed in IST)
 - Structured logging
@@ -110,6 +113,10 @@ In your server, type `/` and run:
 - `/login`
 - `/status`
 - `/logout`
+- `/board start`
+- `/claim seat:Mantis`
+- `/board show`
+- `/board end`
 
 ## Environment Variables
 
@@ -117,8 +124,21 @@ In your server, type `/` and run:
 |----------|----------|-------------|
 | `DISCORD_TOKEN` | Yes | Discord bot token |
 | `DISCORD_GUILD_ID` | Recommended | Guild ID for instant slash command sync |
+| `DISCORD_SHIFT_LOG_CHANNEL_ID` | Recommended | Lock attendance + board commands to one channel |
+| `BOARD_SEATS` | No | Comma-separated seats (default: `Mantis,Zendesk,SalesIQ,Escalations`) |
 | `DATABASE_PATH` | No | SQLite file path (default: `data/attendance.db` locally, `/app/data/attendance.db` on Railway) |
 | `LOG_LEVEL` | No | Logging level (default: `INFO`) |
+
+### Shift work board
+
+When multiple people share a shift, start a board and claim seats so Discord shows who owns each queue:
+
+1. `/board start label:Night shift`
+2. Each person `/claim seat:Mantis` (or Zendesk, SalesIQ, …)
+3. Mid-shift moves: `/reassign seat:Zendesk user:@teammate` or `/release seat:Mantis`
+4. `/board show` anytime · `/board end` when the shift is over
+
+Seat names come from `BOARD_SEATS`. Changing that env var affects **new** boards only.
 
 All user-facing timestamps are shown in **IST** (Asia/Kolkata). Data is stored in UTC internally for consistency.
 
