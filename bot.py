@@ -28,6 +28,7 @@ logger = logging.getLogger("attendance-bot")
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
+DISCORD_SHIFT_LOG_CHANNEL_ID = os.getenv("DISCORD_SHIFT_LOG_CHANNEL_ID")
 DATABASE_PATH = str(default_database_path())
 
 EMBED_COLOR_LOGIN = discord.Color.green()
@@ -55,12 +56,27 @@ def error_embed(title: str, description: str) -> discord.Embed:
     return discord.Embed(title=title, description=description, color=EMBED_COLOR_ERROR)
 
 
+def parse_optional_int(value: str | None, name: str) -> int | None:
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a valid integer.") from exc
+
+
 class AttendanceBot(commands.Bot):
-    def __init__(self, database: AttendanceDatabase, guild_id: int | None) -> None:
+    def __init__(
+        self,
+        database: AttendanceDatabase,
+        guild_id: int | None,
+        shift_log_channel_id: int | None,
+    ) -> None:
         intents = discord.Intents.default()
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.database = database
         self.guild_id = guild_id
+        self.shift_log_channel_id = shift_log_channel_id
 
     async def setup_hook(self) -> None:
         guild = discord.Object(id=self.guild_id) if self.guild_id else None
@@ -75,14 +91,53 @@ class AttendanceBot(commands.Bot):
 
     async def on_ready(self) -> None:
         logger.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown")
+        if self.shift_log_channel_id:
+            logger.info("Shift log channel locked to %s", self.shift_log_channel_id)
+        else:
+            logger.warning(
+                "DISCORD_SHIFT_LOG_CHANNEL_ID is not set. "
+                "Attendance commands will post in any channel."
+            )
 
 
-def create_bot(database: AttendanceDatabase, guild_id: int | None) -> AttendanceBot:
-    bot = AttendanceBot(database=database, guild_id=guild_id)
+def create_bot(
+    database: AttendanceDatabase,
+    guild_id: int | None,
+    shift_log_channel_id: int | None,
+) -> AttendanceBot:
+    bot = AttendanceBot(
+        database=database,
+        guild_id=guild_id,
+        shift_log_channel_id=shift_log_channel_id,
+    )
+
+    async def ensure_shift_log_channel(interaction: discord.Interaction) -> bool:
+        """Return True if this channel is allowed to post attendance logs."""
+        if bot.shift_log_channel_id is None:
+            return True
+
+        if interaction.channel_id == bot.shift_log_channel_id:
+            return True
+
+        await interaction.response.send_message(
+            embed=error_embed(
+                "Wrong Channel",
+                (
+                    "Attendance logs are only allowed in the shift log channel.\n"
+                    f"Please use <#{bot.shift_log_channel_id}> for "
+                    "`/login`, `/logout`, `/status`, and `/exchange`."
+                ),
+            ),
+            ephemeral=True,
+        )
+        return False
 
     @bot.tree.command(name="login", description="Record your login time and start an attendance session.")
     async def login(interaction: discord.Interaction) -> None:
         assert interaction.user is not None
+
+        if not await ensure_shift_log_channel(interaction):
+            return
 
         try:
             session = bot.database.start_session(
@@ -117,6 +172,9 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
     @bot.tree.command(name="logout", description="Record your logout time and close your attendance session.")
     async def logout(interaction: discord.Interaction) -> None:
         assert interaction.user is not None
+
+        if not await ensure_shift_log_channel(interaction):
+            return
 
         logout_at = utc_now()
 
@@ -157,6 +215,9 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
 
     @bot.tree.command(name="status", description="Show all users currently logged in.")
     async def status(interaction: discord.Interaction) -> None:
+        if not await ensure_shift_log_channel(interaction):
+            return
+
         try:
             sessions = bot.database.list_active_sessions()
             exchanges = bot.database.list_shift_exchanges(limit=5)
@@ -192,7 +253,6 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         if exchanges:
             lines: list[str] = []
             for ex in exchanges:
-                # Keep this compact to avoid embed limits.
                 lines.append(
                     f"- **{ex.date}** • **{ex.shift}** • {ex.from_username} → {ex.to_username} (ID: {ex.id})"
                 )
@@ -222,6 +282,9 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
         notes: str = "",
     ) -> None:
         assert interaction.user is not None
+
+        if not await ensure_shift_log_channel(interaction):
+            return
 
         if teammate.bot:
             await interaction.response.send_message(
@@ -285,23 +348,22 @@ def create_bot(database: AttendanceDatabase, guild_id: int | None) -> Attendance
     return bot
 
 
-def validate_config() -> tuple[str, int | None]:
+def validate_config() -> tuple[str, int | None, int | None]:
     if not DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is not set. Add it to your .env file or environment variables.")
 
-    guild_id: int | None = None
-    if DISCORD_GUILD_ID:
-        try:
-            guild_id = int(DISCORD_GUILD_ID)
-        except ValueError as exc:
-            raise RuntimeError("DISCORD_GUILD_ID must be a valid integer.") from exc
+    guild_id = parse_optional_int(DISCORD_GUILD_ID, "DISCORD_GUILD_ID")
+    shift_log_channel_id = parse_optional_int(
+        DISCORD_SHIFT_LOG_CHANNEL_ID,
+        "DISCORD_SHIFT_LOG_CHANNEL_ID",
+    )
 
-    return DISCORD_TOKEN, guild_id
+    return DISCORD_TOKEN, guild_id, shift_log_channel_id
 
 
 def main() -> None:
     try:
-        token, guild_id = validate_config()
+        token, guild_id, shift_log_channel_id = validate_config()
     except RuntimeError as exc:
         logger.error("%s", exc)
         sys.exit(1)
@@ -312,7 +374,11 @@ def main() -> None:
     active_count = len(database.list_active_sessions())
     logger.info("Active sessions in database: %s", active_count)
 
-    bot = create_bot(database=database, guild_id=guild_id)
+    bot = create_bot(
+        database=database,
+        guild_id=guild_id,
+        shift_log_channel_id=shift_log_channel_id,
+    )
 
     try:
         bot.run(token, log_handler=None)
