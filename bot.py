@@ -238,15 +238,22 @@ def create_bot(
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        query = current.strip().casefold()
-        choices: list[app_commands.Choice[str]] = []
-        for seat in bot.board_seats:
-            if query and query not in seat.casefold():
-                continue
-            choices.append(app_commands.Choice(name=seat, value=seat))
-            if len(choices) >= 25:
-                break
-        return choices
+        try:
+            query = current.strip().casefold()
+            choices: list[app_commands.Choice[str]] = []
+            for seat in bot.board_seats:
+                if query and query not in seat.casefold():
+                    continue
+                choices.append(app_commands.Choice(name=seat, value=seat))
+                if len(choices) >= 25:
+                    break
+            return choices
+        except Exception:
+            logger.exception("Seat autocomplete failed")
+            return [
+                app_commands.Choice(name=seat, value=seat)
+                for seat in bot.board_seats[:25]
+            ]
 
     def ensure_work_board(interaction: discord.Interaction) -> WorkBoard:
         assert interaction.user is not None
@@ -686,33 +693,32 @@ def create_bot(
         description="Assign seats to people with optional time slots (IST).",
     )
     @app_commands.describe(
-        seat1="First seat, e.g. Mantis",
+        seat1="First seat — Mantis, Zendesk, SalesIQ, or Escalations",
         user1="Person for seat 1",
+        seat2="Second seat (optional, can match seat1)",
+        user2="Person for seat 2 (optional)",
+        seat3="Third seat (optional, can match seat1/seat2)",
+        user3="Person for seat 3 (optional)",
         from1="Start time for seat 1, e.g. 09:00 (optional)",
         to1="End time for seat 1, e.g. 14:00 (optional)",
-        seat2="Second seat (can be the same as seat1)",
-        user2="Person for seat 2 (optional)",
         from2="Start time for seat 2 (optional)",
         to2="End time for seat 2 (optional)",
-        seat3="Third seat (can be the same as seat1/seat2)",
-        user3="Person for seat 3 (optional)",
         from3="Start time for seat 3 (optional)",
         to3="End time for seat 3 (optional)",
         notes="Optional note applied to all assignments in this command",
     )
-    @app_commands.autocomplete(seat1=seat_autocomplete, seat2=seat_autocomplete, seat3=seat_autocomplete)
     async def assign(
         interaction: discord.Interaction,
         seat1: str,
         user1: discord.Member,
+        seat2: str = "",
+        user2: discord.Member | None = None,
+        seat3: str = "",
+        user3: discord.Member | None = None,
         from1: str = "",
         to1: str = "",
-        seat2: str | None = None,
-        user2: discord.Member | None = None,
         from2: str = "",
         to2: str = "",
-        seat3: str | None = None,
-        user3: discord.Member | None = None,
         from3: str = "",
         to3: str = "",
         notes: str = "",
@@ -802,7 +808,8 @@ def create_bot(
             await interaction.response.send_message(
                 embed=error_embed(
                     "Nothing To Assign",
-                    "Example: `/assign seat1:Mantis user1:@A from1:09:00 to1:14:00 seat2:Mantis user2:@B from2:14:00 to2:18:00`",
+                    "Example: `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Zendesk user3:@C`",
+                    "Seats: type `Mantis`, `Zendesk`, `SalesIQ`, or `Escalations`. Times go in from1/to1, from2/to2, from3/to3.",
                 ),
                 ephemeral=True,
             )
