@@ -280,6 +280,11 @@ def create_bot(
             logger.exception("Time slot autocomplete failed")
             return list(TIME_SLOT_CHOICES)
 
+    seat_choices = [
+        app_commands.Choice(name=seat, value=seat)
+        for seat in bot.board_seats[:25]
+    ]
+
     def ensure_work_board(interaction: discord.Interaction) -> WorkBoard:
         assert interaction.user is not None
         return bot.database.get_or_create_active_work_board(
@@ -718,7 +723,7 @@ def create_bot(
         description="Assign seats to people with optional time slots (IST).",
     )
     @app_commands.describe(
-        seat1="First seat — Mantis, Zendesk, SalesIQ, or Escalations",
+        seat1="First seat — pick from list",
         user1="Person for seat 1",
         seat2="Second seat (optional, can match seat1)",
         user2="Person for seat 2 (optional)",
@@ -732,6 +737,11 @@ def create_bot(
         to3="End time slot for seat 3 (optional)",
         notes="Optional note applied to all assignments in this command",
     )
+    @app_commands.choices(
+        seat1=seat_choices,
+        seat2=seat_choices,
+        seat3=seat_choices,
+    )
     @app_commands.autocomplete(
         from1=time_slot_autocomplete,
         to1=time_slot_autocomplete,
@@ -744,9 +754,9 @@ def create_bot(
         interaction: discord.Interaction,
         seat1: str,
         user1: discord.Member,
-        seat2: str = "",
+        seat2: str | None = None,
         user2: discord.Member | None = None,
-        seat3: str = "",
+        seat3: str | None = None,
         user3: discord.Member | None = None,
         from1: str | None = None,
         to1: str | None = None,
@@ -760,8 +770,8 @@ def create_bot(
             interaction,
             entries=[
                 (seat1, user1, from1 or "", to1 or ""),
-                (seat2, user2, from2 or "", to2 or ""),
-                (seat3, user3, from3 or "", to3 or ""),
+                (seat2 or "", user2, from2 or "", to2 or ""),
+                (seat3 or "", user3, from3 or "", to3 or ""),
             ],
             notes=notes,
         )
@@ -884,12 +894,13 @@ def create_bot(
 
     @bot.tree.command(name="claim", description="Join a seat with an optional time slot (IST).")
     @app_commands.describe(
-        seat="Seat to claim, e.g. Mantis or Zendesk",
+        seat="Seat to claim — pick from list",
         from_time="Start time slot — pick from list (optional)",
         to_time="End time slot — pick from list (optional)",
         notes="Optional note",
     )
-    @app_commands.autocomplete(seat=seat_autocomplete, from_time=time_slot_autocomplete, to_time=time_slot_autocomplete)
+    @app_commands.choices(seat=seat_choices)
+    @app_commands.autocomplete(from_time=time_slot_autocomplete, to_time=time_slot_autocomplete)
     async def claim(
         interaction: discord.Interaction,
         seat: str,
@@ -956,10 +967,10 @@ def create_bot(
 
     @bot.tree.command(name="release", description="Remove yourself (or someone) from a seat.")
     @app_commands.describe(
-        seat="Seat to leave, e.g. Mantis",
+        seat="Seat to leave — pick from list",
         user="Optional: remove this person instead of yourself",
     )
-    @app_commands.autocomplete(seat=seat_autocomplete)
+    @app_commands.choices(seat=seat_choices)
     async def release(
         interaction: discord.Interaction,
         seat: str,
@@ -1024,11 +1035,11 @@ def create_bot(
         description="Add someone to a seat (same as one /assign pair).",
     )
     @app_commands.describe(
-        seat="Seat to assign, e.g. Zendesk",
+        seat="Seat to assign — pick from list",
         user="Teammate to add on this seat",
         notes="Optional note",
     )
-    @app_commands.autocomplete(seat=seat_autocomplete)
+    @app_commands.choices(seat=seat_choices)
     async def reassign(
         interaction: discord.Interaction,
         seat: str,
