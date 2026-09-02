@@ -573,9 +573,9 @@ def create_bot(
         embed.add_field(
             name="How to use",
             value=(
-                "`/assign` → pick **one seat**, then user1/user2/user3 on that seat\n"
-                "Run `/assign` again for a different seat · `/claim` to self-join\n"
-                "`/release` · `/board show` · `/board end`"
+                "`/assign` → seat1/user1, seat2/user2, seat3/user3 (pick seats from list)\n"
+                "Same seat on seat1+seat2+seat3 = 3 people on one queue\n"
+                "`/claim` · `/release` · `/board show` · `/board end`"
             ),
             inline=False,
         )
@@ -715,23 +715,27 @@ def create_bot(
 
     @bot.tree.command(
         name="assign",
-        description="Assign up to 3 people to the same seat, each with optional times.",
+        description="Assign seat1/seat2/seat3 — same or different seats, each with a person and optional times.",
     )
     @app_commands.describe(
-        seat="Seat — pick Mantis, Zendesk, SalesIQ, or Escalations",
-        user1="Person 1 (required)",
-        from1="Start time for person 1 (optional)",
-        to1="End time for person 1 (optional)",
-        user2="Person 2 on the same seat (optional)",
-        from2="Start time for person 2 (optional)",
-        to2="End time for person 2 (optional)",
-        user3="Person 3 on the same seat (optional)",
-        from3="Start time for person 3 (optional)",
-        to3="End time for person 3 (optional)",
-        notes="Note for everyone in this command (optional)",
+        seat1="Seat 1 — pick from list (required with user1)",
+        user1="Person for seat 1",
+        from1="Start time for seat 1 (optional)",
+        to1="End time for seat 1 (optional)",
+        seat2="Seat 2 — can be same as seat1 for another person (optional)",
+        user2="Person for seat 2 (optional)",
+        from2="Start time for seat 2 (optional)",
+        to2="End time for seat 2 (optional)",
+        seat3="Seat 3 — can be same as seat1/seat2 (optional)",
+        user3="Person for seat 3 (optional)",
+        from3="Start time for seat 3 (optional)",
+        to3="End time for seat 3 (optional)",
+        notes="Note for all assignments in this command (optional)",
     )
     @app_commands.choices(
-        seat=seat_choices,
+        seat1=seat_choices,
+        seat2=seat_choices,
+        seat3=seat_choices,
         from1=time_choices,
         to1=time_choices,
         from2=time_choices,
@@ -741,34 +745,34 @@ def create_bot(
     )
     async def assign(
         interaction: discord.Interaction,
-        seat: str,
+        seat1: str,
         user1: discord.Member,
         from1: str | None = None,
         to1: str | None = None,
+        seat2: str | None = None,
         user2: discord.Member | None = None,
         from2: str | None = None,
         to2: str | None = None,
+        seat3: str | None = None,
         user3: discord.Member | None = None,
         from3: str | None = None,
         to3: str | None = None,
         notes: str = "",
     ) -> None:
-        await _assign_users_to_seat(
+        await _assign_entries(
             interaction,
-            seat=seat,
-            users=[
-                (user1, from1 or "", to1 or ""),
-                (user2, from2 or "", to2 or ""),
-                (user3, from3 or "", to3 or ""),
+            entries=[
+                (seat1, user1, from1 or "", to1 or ""),
+                (seat2 or "", user2, from2 or "", to2 or ""),
+                (seat3 or "", user3, from3 or "", to3 or ""),
             ],
             notes=notes,
         )
 
-    async def _assign_users_to_seat(
+    async def _assign_entries(
         interaction: discord.Interaction,
         *,
-        seat: str,
-        users: list[tuple[discord.Member | None, str, str]],
+        entries: list[tuple[str, discord.Member | None, str, str]],
         notes: str = "",
     ) -> None:
         assert interaction.user is not None
@@ -776,27 +780,47 @@ def create_bot(
         if not await ensure_shift_log_channel(interaction):
             return
 
-        resolved = resolve_seat_name(seat, bot.board_seats)
-        if resolved is None:
-            await interaction.response.send_message(
-                embed=error_embed(
-                    "Unknown Seat",
-                    f"`{seat}` is not a configured seat.\nSeats: {', '.join(bot.board_seats)}",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        planned: list[tuple[discord.Member, str | None, str | None]] = []
+        planned: list[tuple[str, discord.Member, str | None, str | None]] = []
         seen_user_ids: set[int] = set()
 
-        for index, (member, from_raw, to_raw) in enumerate(users, start=1):
-            if member is None:
+        for index, (seat_raw, member, from_raw, to_raw) in enumerate(entries, start=1):
+            seat_text = (seat_raw or "").strip()
+            if not seat_text and member is None:
                 continue
+            if seat_text and member is None:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Missing Person",
+                        f"You picked **seat{index}** but not **user{index}**.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            if member is not None and not seat_text:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Missing Seat",
+                        f"You picked **user{index}** but not **seat{index}**.",
+                    ),
+                    ephemeral=True,
+                )
+                return
 
+            assert member is not None
             if member.bot:
                 await interaction.response.send_message(
                     embed=error_embed("Invalid User", "You cannot assign a bot to a seat."),
+                    ephemeral=True,
+                )
+                return
+
+            resolved = resolve_seat_name(seat_text, bot.board_seats)
+            if resolved is None:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Unknown Seat",
+                        f"**seat{index}** `{seat_text}` is not valid.\nSeats: {', '.join(bot.board_seats)}",
+                    ),
                     ephemeral=True,
                 )
                 return
@@ -805,7 +829,7 @@ def create_bot(
                 await interaction.response.send_message(
                     embed=error_embed(
                         "Duplicate Person",
-                        f"{member.mention} is listed more than once in this command.",
+                        f"{member.mention} is listed more than once. Use each person only once per command.",
                     ),
                     ephemeral=True,
                 )
@@ -821,14 +845,15 @@ def create_bot(
                 )
                 return
 
-            planned.append((member, shift_from, shift_to))
+            planned.append((resolved, member, shift_from, shift_to))
 
         if not planned:
             await interaction.response.send_message(
                 embed=error_embed(
                     "Nothing To Assign",
-                    "Pick a **seat** and at least **user1**.\n"
-                    "Use **+ more** for user2/user3 on the same seat with their times.",
+                    "Fill **seat1** + **user1** at minimum.\n"
+                    "Use **+ more** for seat2/user2 and seat3/user3.\n"
+                    "Tip: set seat1=seat2=seat3=Mantis to put 3 people on Mantis in one go.",
                 ),
                 ephemeral=True,
             )
@@ -837,17 +862,16 @@ def create_bot(
         try:
             board = ensure_work_board(interaction)
             mentions: list[str] = []
-            for member, shift_from, shift_to in planned:
+            for seat_name, member, shift_from, shift_to in planned:
                 assignment = assign_member_to_seat(
                     board_id=board.id,
-                    seat=resolved,
+                    seat=seat_name,
                     member=member,
                     notes=notes,
                     shift_from=shift_from,
                     shift_to=shift_to,
                 )
-                line = member.mention + format_shift_window(assignment.shift_from, assignment.shift_to)
-                mentions.append(line)
+                mentions.append(format_assignment_mention(assignment, member))
             assignments = bot.database.list_work_assignments(board.id)
         except ValueError as exc:
             await interaction.response.send_message(
@@ -865,7 +889,7 @@ def create_bot(
 
         embed = build_board_embed(board, assignments, title="🗂️ Assignments Updated")
         await interaction.response.send_message(
-            content=f"**{resolved}**:\n" + "\n".join(mentions),
+            content="Assigned:\n" + "\n".join(mentions),
             embed=embed,
         )
 
@@ -1022,10 +1046,9 @@ def create_bot(
         user: discord.Member,
         notes: str = "",
     ) -> None:
-        await _assign_users_to_seat(
+        await _assign_entries(
             interaction,
-            seat=seat,
-            users=[(user, "", "")],
+            entries=[(seat, user, "", "")],
             notes=notes,
         )
 

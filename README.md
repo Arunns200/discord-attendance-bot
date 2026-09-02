@@ -134,24 +134,25 @@ In your server, type `/` and run:
 
 ### Shift work board
 
-**One seat, multiple people with times:**
+Use **seat1**, **seat2**, **seat3** — each has a person + optional times:
 
+**3 people on Mantis (same seat):**
 ```
-/assign
-  seat: Mantis
-  user1: @Chandan   from1: 01:00 IST   to1: 02:00 IST
-  user2: @Arun      from2: 02:00 IST   to2: 04:00 IST
-  user3: @Pavan     from3: 04:00 IST   to3: 08:00 IST
+seat1: Mantis   user1: @Chandan   from1: 01:00   to1: 02:00
+seat2: Mantis   user2: @Arun      from2: 02:00   to2: 04:00
+seat3: Mantis   user3: @Pavan     from3: 04:00   to3: 08:00
 ```
 
-**Different seat?** Run `/assign` again with `seat: Zendesk` (or SalesIQ, etc.).
+**Different seats:**
+```
+seat1: Mantis   user1: @Arun
+seat2: Zendesk  user2: @Chandan
+seat3: SalesIQ  user3: @Pavan
+```
 
-- `/claim seat:Mantis` — join a seat yourself with optional times
-- `/release seat:Mantis` — leave a seat
-- `/board show` — see current board
-- `/board end` — reset for new shift
-
-Leave optional user/time fields empty if you don't need them.
+- `/claim` — join a seat yourself
+- `/release` — leave a seat
+- `/board show` · `/board end`
 
 All user-facing timestamps are shown in **IST** (Asia/Kolkata). Data is stored in UTC internally for consistency.
 
