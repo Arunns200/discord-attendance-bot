@@ -58,6 +58,8 @@ class WorkAssignment:
     username: str
     notes: str
     assigned_at: datetime | None
+    shift_from: str | None = None
+    shift_to: str | None = None
 
 
 class AttendanceDatabase:
@@ -178,12 +180,22 @@ class AttendanceDatabase:
                     username TEXT NOT NULL,
                     notes TEXT NOT NULL DEFAULT '',
                     assigned_at TEXT,
+                    shift_from TEXT,
+                    shift_to TEXT,
                     UNIQUE (board_id, seat, user_id),
                     FOREIGN KEY (board_id) REFERENCES work_boards (id)
                 )
                 """
             )
             self._migrate_work_assignments_multi_user(conn)
+            assignment_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(work_assignments)").fetchall()
+            }
+            if "shift_from" not in assignment_columns:
+                conn.execute("ALTER TABLE work_assignments ADD COLUMN shift_from TEXT")
+            if "shift_to" not in assignment_columns:
+                conn.execute("ALTER TABLE work_assignments ADD COLUMN shift_to TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_work_assignments_board
@@ -239,6 +251,8 @@ class AttendanceDatabase:
                 username TEXT NOT NULL,
                 notes TEXT NOT NULL DEFAULT '',
                 assigned_at TEXT,
+                shift_from TEXT,
+                shift_to TEXT,
                 UNIQUE (board_id, seat, user_id),
                 FOREIGN KEY (board_id) REFERENCES work_boards (id)
             )
@@ -247,9 +261,9 @@ class AttendanceDatabase:
         conn.execute(
             """
             INSERT INTO work_assignments (
-                board_id, seat, user_id, username, notes, assigned_at
+                board_id, seat, user_id, username, notes, assigned_at, shift_from, shift_to
             )
-            SELECT board_id, seat, user_id, username, COALESCE(notes, ''), assigned_at
+            SELECT board_id, seat, user_id, username, COALESCE(notes, ''), assigned_at, NULL, NULL
             FROM work_assignments_legacy
             WHERE user_id IS NOT NULL
             """
@@ -353,6 +367,8 @@ class AttendanceDatabase:
         )
 
     def _row_to_work_assignment(self, row: sqlite3.Row) -> WorkAssignment:
+        shift_from = row["shift_from"] if "shift_from" in row.keys() else None
+        shift_to = row["shift_to"] if "shift_to" in row.keys() else None
         return WorkAssignment(
             id=row["id"],
             board_id=row["board_id"],
@@ -365,7 +381,13 @@ class AttendanceDatabase:
                 if row["assigned_at"] is not None
                 else None
             ),
+            shift_from=shift_from or None,
+            shift_to=shift_to or None,
         )
+
+    _WORK_ASSIGNMENT_COLUMNS = (
+        "id, board_id, seat, user_id, username, notes, assigned_at, shift_from, shift_to"
+    )
 
     def get_active_session(self, user_id: int) -> Session | None:
         with self._connection() as conn:
@@ -707,11 +729,11 @@ class AttendanceDatabase:
     def list_work_assignments(self, board_id: int) -> list[WorkAssignment]:
         with self._connection() as conn:
             rows = conn.execute(
-                """
-                SELECT id, board_id, seat, user_id, username, notes, assigned_at
+                f"""
+                SELECT {self._WORK_ASSIGNMENT_COLUMNS}
                 FROM work_assignments
                 WHERE board_id = ?
-                ORDER BY id ASC
+                ORDER BY shift_from ASC, id ASC
                 """,
                 (board_id,),
             ).fetchall()
@@ -725,8 +747,8 @@ class AttendanceDatabase:
     ) -> WorkAssignment | None:
         with self._connection() as conn:
             rows = conn.execute(
-                """
-                SELECT id, board_id, seat, user_id, username, notes, assigned_at
+                f"""
+                SELECT {self._WORK_ASSIGNMENT_COLUMNS}
                 FROM work_assignments
                 WHERE board_id = ? AND user_id = ?
                 """,
@@ -756,7 +778,8 @@ class AttendanceDatabase:
         username: str,
         assigned_at: datetime,
         notes: str = "",
-        allow_duplicate: bool = False,
+        shift_from: str | None = None,
+        shift_to: str | None = None,
     ) -> WorkAssignment:
         board = None
         with self._connection() as conn:
@@ -778,21 +801,21 @@ class AttendanceDatabase:
             raise ValueError(f"Unknown seat `{seat}`. Seats on this board: {available}")
 
         existing = self.get_work_assignment(board_id, resolved, user_id)
-        if existing is not None and not allow_duplicate:
-            raise ValueError(f"{username} is already on `{resolved}`.")
 
         with self._connection() as conn:
             if existing is not None:
                 conn.execute(
                     """
                     UPDATE work_assignments
-                    SET username = ?, notes = ?, assigned_at = ?
+                    SET username = ?, notes = ?, assigned_at = ?, shift_from = ?, shift_to = ?
                     WHERE id = ?
                     """,
                     (
                         username,
                         notes.strip(),
                         self._format_timestamp(assigned_at),
+                        shift_from,
+                        shift_to,
                         existing.id,
                     ),
                 )
@@ -801,9 +824,9 @@ class AttendanceDatabase:
                 cursor = conn.execute(
                     """
                     INSERT INTO work_assignments (
-                        board_id, seat, user_id, username, notes, assigned_at
+                        board_id, seat, user_id, username, notes, assigned_at, shift_from, shift_to
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         board_id,
@@ -812,13 +835,15 @@ class AttendanceDatabase:
                         username,
                         notes.strip(),
                         self._format_timestamp(assigned_at),
+                        shift_from,
+                        shift_to,
                     ),
                 )
                 assignment_id = cursor.lastrowid
 
             row = conn.execute(
-                """
-                SELECT id, board_id, seat, user_id, username, notes, assigned_at
+                f"""
+                SELECT {self._WORK_ASSIGNMENT_COLUMNS}
                 FROM work_assignments
                 WHERE id = ?
                 """,

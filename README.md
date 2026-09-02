@@ -136,12 +136,12 @@ In your server, type `/` and run:
 
 No `/board start` needed — just assign directly:
 
-1. `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Mantis user3:@C`
-2. `/claim seat:Mantis` to join a seat yourself
+1. `/assign seat1:Mantis user1:@A from1:09:00 to1:14:00 seat2:Mantis user2:@B from2:14:00 to2:18:00`
+2. `/claim seat:Mantis from_time:14:00 to_time:18:00` to join with your time slot
 3. `/release seat:Mantis` to leave · `/release seat:Mantis user:@other` to remove someone
 4. `/board show` to see current assignments · `/board end` to reset for a new shift
 
-The same seat can have multiple people. Run `/assign` or `/claim` again to add more.
+Times are **IST** (24-hour, e.g. `09:00`, `14:30`). `from`/`to` are optional.
 
 All user-facing timestamps are shown in **IST** (Asia/Kolkata). Data is stored in UTC internally for consistency.
 

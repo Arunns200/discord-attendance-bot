@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from config import default_database_path, log_database_setup
 from database import AttendanceDatabase, WorkAssignment, WorkBoard
-from time_utils import format_ist, to_ist, utc_now
+from time_utils import format_ist, format_shift_window, parse_shift_window, to_ist, utc_now
 
 load_dotenv()
 
@@ -97,6 +97,20 @@ def resolve_seat_name(seat: str, seats: list[str]) -> str | None:
     return None
 
 
+def format_assignment_line(assignment: WorkAssignment) -> str:
+    line = f"<@{assignment.user_id}>"
+    line += format_shift_window(assignment.shift_from, assignment.shift_to)
+    if assignment.notes:
+        line += f" — {assignment.notes}"
+    return line
+
+
+def format_assignment_mention(assignment: WorkAssignment, member: discord.Member) -> str:
+    line = f"**{assignment.seat}** → {member.mention}"
+    line += format_shift_window(assignment.shift_from, assignment.shift_to)
+    return line
+
+
 def build_board_embed(
     board: WorkBoard,
     assignments: list[WorkAssignment],
@@ -130,10 +144,7 @@ def build_board_embed(
             continue
         owners: list[str] = []
         for person in people:
-            if person.notes:
-                owners.append(f"<@{person.user_id}> — {person.notes}")
-            else:
-                owners.append(f"<@{person.user_id}>")
+            owners.append(format_assignment_line(person))
         lines.append(f"**{seat}** → {', '.join(owners)}")
 
     embed.add_field(
@@ -252,16 +263,20 @@ def create_bot(
         seat: str,
         member: discord.Member,
         notes: str = "",
-    ) -> None:
+        shift_from: str | None = None,
+        shift_to: str | None = None,
+    ) -> WorkAssignment:
         if member.bot:
             raise ValueError("You cannot assign a seat to a bot.")
-        bot.database.assign_work_seat(
+        return bot.database.assign_work_seat(
             board_id=board_id,
             seat=seat,
             user_id=member.id,
             username=str(member),
             assigned_at=utc_now(),
             notes=notes,
+            shift_from=shift_from,
+            shift_to=shift_to,
         )
 
     @bot.tree.command(name="login", description="Record your login time and start an attendance session.")
@@ -668,15 +683,21 @@ def create_bot(
 
     @bot.tree.command(
         name="assign",
-        description="Assign seats to people (same seat can go to multiple people).",
+        description="Assign seats to people with optional time slots (IST).",
     )
     @app_commands.describe(
         seat1="First seat, e.g. Mantis",
         user1="Person for seat 1",
+        from1="Start time for seat 1, e.g. 09:00 (optional)",
+        to1="End time for seat 1, e.g. 14:00 (optional)",
         seat2="Second seat (can be the same as seat1)",
         user2="Person for seat 2 (optional)",
+        from2="Start time for seat 2 (optional)",
+        to2="End time for seat 2 (optional)",
         seat3="Third seat (can be the same as seat1/seat2)",
         user3="Person for seat 3 (optional)",
+        from3="Start time for seat 3 (optional)",
+        to3="End time for seat 3 (optional)",
         notes="Optional note applied to all assignments in this command",
     )
     @app_commands.autocomplete(seat1=seat_autocomplete, seat2=seat_autocomplete, seat3=seat_autocomplete)
@@ -684,18 +705,24 @@ def create_bot(
         interaction: discord.Interaction,
         seat1: str,
         user1: discord.Member,
+        from1: str = "",
+        to1: str = "",
         seat2: str | None = None,
         user2: discord.Member | None = None,
+        from2: str = "",
+        to2: str = "",
         seat3: str | None = None,
         user3: discord.Member | None = None,
+        from3: str = "",
+        to3: str = "",
         notes: str = "",
     ) -> None:
         await _assign_seat_command(
             interaction,
-            pairs=[
-                (seat1, user1),
-                (seat2, user2),
-                (seat3, user3),
+            entries=[
+                (seat1, user1, from1, to1),
+                (seat2, user2, from2, to2),
+                (seat3, user3, from3, to3),
             ],
             notes=notes,
         )
@@ -703,7 +730,7 @@ def create_bot(
     async def _assign_seat_command(
         interaction: discord.Interaction,
         *,
-        pairs: list[tuple[str | None, discord.Member | None]],
+        entries: list[tuple[str | None, discord.Member | None, str, str]],
         notes: str = "",
     ) -> None:
         assert interaction.user is not None
@@ -711,10 +738,10 @@ def create_bot(
         if not await ensure_shift_log_channel(interaction):
             return
 
-        planned: list[tuple[str, discord.Member]] = []
+        planned: list[tuple[str, discord.Member, str | None, str | None]] = []
         seen_pairs: set[tuple[str, int]] = set()
 
-        for index, (seat_raw, member) in enumerate(pairs, start=1):
+        for index, (seat_raw, member, from_raw, to_raw) in enumerate(entries, start=1):
             seat_text = (seat_raw or "").strip()
             if not seat_text and member is None:
                 continue
@@ -749,6 +776,15 @@ def create_bot(
                 )
                 return
 
+            try:
+                shift_from, shift_to = parse_shift_window(from_raw, to_raw)
+            except ValueError as exc:
+                await interaction.response.send_message(
+                    embed=error_embed("Invalid Time", str(exc)),
+                    ephemeral=True,
+                )
+                return
+
             pair_key = (resolved.casefold(), member.id)
             if pair_key in seen_pairs:
                 await interaction.response.send_message(
@@ -760,13 +796,13 @@ def create_bot(
                 )
                 return
             seen_pairs.add(pair_key)
-            planned.append((resolved, member))
+            planned.append((resolved, member, shift_from, shift_to))
 
         if not planned:
             await interaction.response.send_message(
                 embed=error_embed(
                     "Nothing To Assign",
-                    "Example: `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Zendesk user3:@C`",
+                    "Example: `/assign seat1:Mantis user1:@A from1:09:00 to1:14:00 seat2:Mantis user2:@B from2:14:00 to2:18:00`",
                 ),
                 ephemeral=True,
             )
@@ -775,14 +811,16 @@ def create_bot(
         try:
             board = ensure_work_board(interaction)
             mentions: list[str] = []
-            for seat_name, member in planned:
-                assign_member_to_seat(
+            for seat_name, member, shift_from, shift_to in planned:
+                assignment = assign_member_to_seat(
                     board_id=board.id,
                     seat=seat_name,
                     member=member,
                     notes=notes,
+                    shift_from=shift_from,
+                    shift_to=shift_to,
                 )
-                mentions.append(f"**{seat_name}** → {member.mention}")
+                mentions.append(format_assignment_mention(assignment, member))
             assignments = bot.database.list_work_assignments(board.id)
         except ValueError as exc:
             await interaction.response.send_message(
@@ -804,10 +842,21 @@ def create_bot(
             embed=embed,
         )
 
-    @bot.tree.command(name="claim", description="Join a seat (others can already be on it).")
-    @app_commands.describe(seat="Seat to claim, e.g. Mantis or Zendesk", notes="Optional note")
+    @bot.tree.command(name="claim", description="Join a seat with an optional time slot (IST).")
+    @app_commands.describe(
+        seat="Seat to claim, e.g. Mantis or Zendesk",
+        from_time="Start time, e.g. 09:00 (optional)",
+        to_time="End time, e.g. 14:00 (optional)",
+        notes="Optional note",
+    )
     @app_commands.autocomplete(seat=seat_autocomplete)
-    async def claim(interaction: discord.Interaction, seat: str, notes: str = "") -> None:
+    async def claim(
+        interaction: discord.Interaction,
+        seat: str,
+        from_time: str = "",
+        to_time: str = "",
+        notes: str = "",
+    ) -> None:
         assert interaction.user is not None
 
         if not await ensure_shift_log_channel(interaction):
@@ -825,14 +874,25 @@ def create_bot(
             return
 
         try:
+            shift_from, shift_to = parse_shift_window(from_time, to_time)
+        except ValueError as exc:
+            await interaction.response.send_message(
+                embed=error_embed("Invalid Time", str(exc)),
+                ephemeral=True,
+            )
+            return
+
+        try:
             board = ensure_work_board(interaction)
-            bot.database.assign_work_seat(
+            assignment = bot.database.assign_work_seat(
                 board_id=board.id,
                 seat=resolved,
                 user_id=interaction.user.id,
                 username=str(interaction.user),
                 assigned_at=utc_now(),
                 notes=notes,
+                shift_from=shift_from,
+                shift_to=shift_to,
             )
             assignments = bot.database.list_work_assignments(board.id)
         except ValueError as exc:
@@ -850,10 +910,9 @@ def create_bot(
             return
 
         embed = build_board_embed(board, assignments)
-        await interaction.response.send_message(
-            content=f"{interaction.user.mention} joined **{resolved}**.",
-            embed=embed,
-        )
+        status = f"{interaction.user.mention} joined **{resolved}**"
+        status += format_shift_window(assignment.shift_from, assignment.shift_to)
+        await interaction.response.send_message(content=status + ".", embed=embed)
 
     @bot.tree.command(name="release", description="Remove yourself (or someone) from a seat.")
     @app_commands.describe(
@@ -938,7 +997,7 @@ def create_bot(
     ) -> None:
         await _assign_seat_command(
             interaction,
-            pairs=[(seat, user)],
+            entries=[(seat, user, "", "")],
             notes=notes,
         )
 
