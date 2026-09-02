@@ -15,7 +15,14 @@ from dotenv import load_dotenv
 
 from config import default_database_path, log_database_setup
 from database import AttendanceDatabase, WorkAssignment, WorkBoard
-from time_utils import format_ist, format_shift_window, parse_shift_window, to_ist, utc_now
+from time_utils import (
+    filter_shift_time_slots,
+    format_ist,
+    format_shift_window,
+    parse_shift_window,
+    to_ist,
+    utc_now,
+)
 
 load_dotenv()
 
@@ -60,6 +67,11 @@ def parse_board_seats(raw: str | None) -> list[str]:
 
 
 BOARD_SEATS = parse_board_seats(os.getenv("BOARD_SEATS"))
+
+TIME_SLOT_CHOICES = [
+    app_commands.Choice(name=f"{slot} IST", value=slot)
+    for slot in filter_shift_time_slots("", limit=25)
+]
 
 
 def format_duration(start: datetime, end: datetime) -> str:
@@ -254,6 +266,19 @@ def create_bot(
                 app_commands.Choice(name=seat, value=seat)
                 for seat in bot.board_seats[:25]
             ]
+
+    async def time_slot_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        try:
+            return [
+                app_commands.Choice(name=f"{slot} IST", value=slot)
+                for slot in filter_shift_time_slots(current, limit=25)
+            ]
+        except Exception:
+            logger.exception("Time slot autocomplete failed")
+            return list(TIME_SLOT_CHOICES)
 
     def ensure_work_board(interaction: discord.Interaction) -> WorkBoard:
         assert interaction.user is not None
@@ -699,13 +724,21 @@ def create_bot(
         user2="Person for seat 2 (optional)",
         seat3="Third seat (optional, can match seat1/seat2)",
         user3="Person for seat 3 (optional)",
-        from1="Start time for seat 1, e.g. 09:00 (optional)",
-        to1="End time for seat 1, e.g. 14:00 (optional)",
-        from2="Start time for seat 2 (optional)",
-        to2="End time for seat 2 (optional)",
-        from3="Start time for seat 3 (optional)",
-        to3="End time for seat 3 (optional)",
+        from1="Start time slot for seat 1 — pick from list (optional)",
+        to1="End time slot for seat 1 — pick from list (optional)",
+        from2="Start time slot for seat 2 (optional)",
+        to2="End time slot for seat 2 (optional)",
+        from3="Start time slot for seat 3 (optional)",
+        to3="End time slot for seat 3 (optional)",
         notes="Optional note applied to all assignments in this command",
+    )
+    @app_commands.autocomplete(
+        from1=time_slot_autocomplete,
+        to1=time_slot_autocomplete,
+        from2=time_slot_autocomplete,
+        to2=time_slot_autocomplete,
+        from3=time_slot_autocomplete,
+        to3=time_slot_autocomplete,
     )
     async def assign(
         interaction: discord.Interaction,
@@ -715,20 +748,20 @@ def create_bot(
         user2: discord.Member | None = None,
         seat3: str = "",
         user3: discord.Member | None = None,
-        from1: str = "",
-        to1: str = "",
-        from2: str = "",
-        to2: str = "",
-        from3: str = "",
-        to3: str = "",
+        from1: str | None = None,
+        to1: str | None = None,
+        from2: str | None = None,
+        to2: str | None = None,
+        from3: str | None = None,
+        to3: str | None = None,
         notes: str = "",
     ) -> None:
         await _assign_seat_command(
             interaction,
             entries=[
-                (seat1, user1, from1, to1),
-                (seat2, user2, from2, to2),
-                (seat3, user3, from3, to3),
+                (seat1, user1, from1 or "", to1 or ""),
+                (seat2, user2, from2 or "", to2 or ""),
+                (seat3, user3, from3 or "", to3 or ""),
             ],
             notes=notes,
         )
@@ -852,16 +885,16 @@ def create_bot(
     @bot.tree.command(name="claim", description="Join a seat with an optional time slot (IST).")
     @app_commands.describe(
         seat="Seat to claim, e.g. Mantis or Zendesk",
-        from_time="Start time, e.g. 09:00 (optional)",
-        to_time="End time, e.g. 14:00 (optional)",
+        from_time="Start time slot — pick from list (optional)",
+        to_time="End time slot — pick from list (optional)",
         notes="Optional note",
     )
-    @app_commands.autocomplete(seat=seat_autocomplete)
+    @app_commands.autocomplete(seat=seat_autocomplete, from_time=time_slot_autocomplete, to_time=time_slot_autocomplete)
     async def claim(
         interaction: discord.Interaction,
         seat: str,
-        from_time: str = "",
-        to_time: str = "",
+        from_time: str | None = None,
+        to_time: str | None = None,
         notes: str = "",
     ) -> None:
         assert interaction.user is not None
