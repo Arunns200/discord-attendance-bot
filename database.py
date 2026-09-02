@@ -687,6 +687,16 @@ class AttendanceDatabase:
     ) -> WorkBoard:
         existing = self.get_active_work_board()
         if existing is not None:
+            if not existing.seats and seats:
+                seats_csv = ",".join(seats)
+                with self._connection() as conn:
+                    conn.execute(
+                        "UPDATE work_boards SET seats_csv = ? WHERE id = ?",
+                        (seats_csv, existing.id),
+                    )
+                refreshed = self.get_active_work_board()
+                if refreshed is not None:
+                    return refreshed
             return existing
         return self.start_work_board(
             started_by_user_id=started_by_user_id,

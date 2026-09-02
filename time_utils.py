@@ -56,7 +56,12 @@ def list_shift_time_slots(*, step_minutes: int = 30) -> tuple[str, ...]:
     return tuple(slots)
 
 
+def hourly_shift_time_slots() -> tuple[str, ...]:
+    return tuple(f"{hour:02d}:00" for hour in range(24))
+
+
 SHIFT_TIME_SLOTS = list_shift_time_slots(step_minutes=30)
+HOURLY_SHIFT_TIME_SLOTS = hourly_shift_time_slots()
 
 
 def filter_shift_time_slots(query: str, *, limit: int = 25) -> list[str]:

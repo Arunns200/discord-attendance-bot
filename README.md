@@ -134,14 +134,14 @@ In your server, type `/` and run:
 
 ### Shift work board
 
-No `/board start` needed — just assign directly:
+No `/board start` needed — use `/assign` directly:
 
-1. `/assign seat1:Mantis user1:@A from1:09:00 to1:14:00 seat2:Mantis user2:@B from2:14:00 to2:18:00`
-2. `/claim seat:Mantis from_time:14:00 to_time:18:00` to join with your time slot
-3. `/release seat:Mantis` to leave · `/release seat:Mantis user:@other` to remove someone
-4. `/board show` to see current assignments · `/board end` to reset for a new shift
+1. **Required:** pick `seat1` + `user1` from the dropdown lists
+2. **Optional:** expand **+ more** for `seat2`/`user2`, `seat3`/`user3`, and times
+3. **Times:** pick `from1`/`to1` etc. from the list (hourly, IST). Leave blank if not needed.
+4. `/claim`, `/release`, `/board show`, `/board end` as needed
 
-Times are **IST** (24-hour, e.g. `09:00`, `14:30`). `from`/`to` are optional.
+**Tips:** Leave optional fields empty — only open them if you need them. Same seat can have multiple people with different time slots.
 
 All user-facing timestamps are shown in **IST** (Asia/Kolkata). Data is stored in UTC internally for consistency.
 

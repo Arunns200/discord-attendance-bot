@@ -16,9 +16,9 @@ from dotenv import load_dotenv
 from config import default_database_path, log_database_setup
 from database import AttendanceDatabase, WorkAssignment, WorkBoard
 from time_utils import (
-    filter_shift_time_slots,
     format_ist,
     format_shift_window,
+    hourly_shift_time_slots,
     parse_shift_window,
     to_ist,
     utc_now,
@@ -68,10 +68,16 @@ def parse_board_seats(raw: str | None) -> list[str]:
 
 BOARD_SEATS = parse_board_seats(os.getenv("BOARD_SEATS"))
 
-TIME_SLOT_CHOICES = [
-    app_commands.Choice(name=f"{slot} IST", value=slot)
-    for slot in filter_shift_time_slots("", limit=25)
-]
+
+def build_seat_choices(seats: list[str]) -> list[app_commands.Choice[str]]:
+    return [app_commands.Choice(name=seat, value=seat) for seat in seats[:25]]
+
+
+def build_time_choices() -> list[app_commands.Choice[str]]:
+    return [
+        app_commands.Choice(name=f"{slot} IST", value=slot)
+        for slot in hourly_shift_time_slots()
+    ]
 
 
 def format_duration(start: datetime, end: datetime) -> str:
@@ -246,44 +252,32 @@ def create_bot(
         )
         return False
 
-    async def seat_autocomplete(
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        try:
-            query = current.strip().casefold()
-            choices: list[app_commands.Choice[str]] = []
-            for seat in bot.board_seats:
-                if query and query not in seat.casefold():
-                    continue
-                choices.append(app_commands.Choice(name=seat, value=seat))
-                if len(choices) >= 25:
-                    break
-            return choices
-        except Exception:
-            logger.exception("Seat autocomplete failed")
-            return [
-                app_commands.Choice(name=seat, value=seat)
-                for seat in bot.board_seats[:25]
-            ]
+    seat_choices = build_seat_choices(bot.board_seats)
+    time_choices = build_time_choices()
 
-    async def time_slot_autocomplete(
+    @bot.tree.error
+    async def on_app_command_error(
         interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        try:
-            return [
-                app_commands.Choice(name=f"{slot} IST", value=slot)
-                for slot in filter_shift_time_slots(current, limit=25)
-            ]
-        except Exception:
-            logger.exception("Time slot autocomplete failed")
-            return list(TIME_SLOT_CHOICES)
+        error: app_commands.AppCommandError,
+    ) -> None:
+        logger.exception("Slash command failed: %s", getattr(interaction.command, "name", "unknown"))
+        message = "Something went wrong. Please try again."
+        if isinstance(error, app_commands.CommandInvokeError) and error.original:
+            if isinstance(error.original, ValueError):
+                message = str(error.original)
+            else:
+                message = str(error.original)
+        elif isinstance(error, app_commands.CheckFailure):
+            message = str(error) or "You cannot run this command here."
 
-    seat_choices = [
-        app_commands.Choice(name=seat, value=seat)
-        for seat in bot.board_seats[:25]
-    ]
+        embed = error_embed("Command Failed", message)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            logger.exception("Failed to send command error response")
 
     def ensure_work_board(interaction: discord.Interaction) -> WorkBoard:
         assert interaction.user is not None
@@ -579,8 +573,9 @@ def create_bot(
         embed.add_field(
             name="How to use",
             value=(
-                "`/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Zendesk user3:@C`\n"
-                "`/claim seat:Mantis` · `/release seat:Mantis` · `/board show` · `/board end`"
+                "`/assign` → pick seat1/user1, seat2/user2, seat3/user3 from lists\n"
+                "Optional: from1/to1, from2/to2, from3/to3 for time slots\n"
+                "`/claim` · `/release` · `/board show` · `/board end`"
             ),
             inline=False,
         )
@@ -720,35 +715,33 @@ def create_bot(
 
     @bot.tree.command(
         name="assign",
-        description="Assign seats to people with optional time slots (IST).",
+        description="Assign up to 3 people to seats (pick seats, users, and optional times from lists).",
     )
     @app_commands.describe(
-        seat1="First seat — pick from list",
+        seat1="Seat 1 — pick from list",
         user1="Person for seat 1",
-        seat2="Second seat (optional, can match seat1)",
+        seat2="Seat 2 (optional)",
         user2="Person for seat 2 (optional)",
-        seat3="Third seat (optional, can match seat1/seat2)",
+        seat3="Seat 3 (optional)",
         user3="Person for seat 3 (optional)",
-        from1="Start time slot for seat 1 — pick from list (optional)",
-        to1="End time slot for seat 1 — pick from list (optional)",
-        from2="Start time slot for seat 2 (optional)",
-        to2="End time slot for seat 2 (optional)",
-        from3="Start time slot for seat 3 (optional)",
-        to3="End time slot for seat 3 (optional)",
-        notes="Optional note applied to all assignments in this command",
+        from1="Start time for person 1 (optional)",
+        to1="End time for person 1 (optional)",
+        from2="Start time for person 2 (optional)",
+        to2="End time for person 2 (optional)",
+        from3="Start time for person 3 (optional)",
+        to3="End time for person 3 (optional)",
+        notes="Note for all assignments (optional)",
     )
     @app_commands.choices(
         seat1=seat_choices,
         seat2=seat_choices,
         seat3=seat_choices,
-    )
-    @app_commands.autocomplete(
-        from1=time_slot_autocomplete,
-        to1=time_slot_autocomplete,
-        from2=time_slot_autocomplete,
-        to2=time_slot_autocomplete,
-        from3=time_slot_autocomplete,
-        to3=time_slot_autocomplete,
+        from1=time_choices,
+        to1=time_choices,
+        from2=time_choices,
+        to2=time_choices,
+        from3=time_choices,
+        to3=time_choices,
     )
     async def assign(
         interaction: discord.Interaction,
@@ -851,8 +844,11 @@ def create_bot(
             await interaction.response.send_message(
                 embed=error_embed(
                     "Nothing To Assign",
-                    "Example: `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Zendesk user3:@C`",
-                    "Seats: type `Mantis`, `Zendesk`, `SalesIQ`, or `Escalations`. Times go in from1/to1, from2/to2, from3/to3.",
+                    (
+                        "Fill at least **seat1** and **user1**.\n"
+                        "Use **+ more** for seat2/user2/seat3/user3 and optional times.\n"
+                        "Leave optional fields empty — do not open them unless needed."
+                    ),
                 ),
                 ephemeral=True,
             )
@@ -892,15 +888,14 @@ def create_bot(
             embed=embed,
         )
 
-    @bot.tree.command(name="claim", description="Join a seat with an optional time slot (IST).")
+    @bot.tree.command(name="claim", description="Join a seat (pick seat and optional times from lists).")
     @app_commands.describe(
-        seat="Seat to claim — pick from list",
-        from_time="Start time slot — pick from list (optional)",
-        to_time="End time slot — pick from list (optional)",
+        seat="Seat — pick from list",
+        from_time="Start time (optional)",
+        to_time="End time (optional)",
         notes="Optional note",
     )
-    @app_commands.choices(seat=seat_choices)
-    @app_commands.autocomplete(from_time=time_slot_autocomplete, to_time=time_slot_autocomplete)
+    @app_commands.choices(seat=seat_choices, from_time=time_choices, to_time=time_choices)
     async def claim(
         interaction: discord.Interaction,
         seat: str,
