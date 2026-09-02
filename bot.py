@@ -111,14 +111,30 @@ def build_board_embed(
         timestamp=to_ist(utc_now()),
     )
 
-    lines: list[str] = []
+    by_seat: dict[str, list[WorkAssignment]] = {}
     for assignment in assignments:
-        if assignment.user_id is not None:
-            owner = f"<@{assignment.user_id}> (`{assignment.username}`)"
-            note = f" — {assignment.notes}" if assignment.notes else ""
-            lines.append(f"**{assignment.seat}** → {owner}{note}")
-        else:
-            lines.append(f"**{assignment.seat}** → _unclaimed_")
+        by_seat.setdefault(assignment.seat, []).append(assignment)
+
+    seat_order = list(board.seats) if board.seats else list(by_seat.keys())
+    for seat in by_seat:
+        if seat not in seat_order:
+            seat_order.append(seat)
+
+    lines: list[str] = []
+    unclaimed = 0
+    for seat in seat_order:
+        people = by_seat.get(seat, [])
+        if not people:
+            lines.append(f"**{seat}** → _unclaimed_")
+            unclaimed += 1
+            continue
+        owners: list[str] = []
+        for person in people:
+            if person.notes:
+                owners.append(f"<@{person.user_id}> — {person.notes}")
+            else:
+                owners.append(f"<@{person.user_id}>")
+        lines.append(f"**{seat}** → {', '.join(owners)}")
 
     embed.add_field(
         name="Assignments",
@@ -126,9 +142,9 @@ def build_board_embed(
         inline=False,
     )
 
-    unclaimed = sum(1 for a in assignments if a.user_id is None)
-    embed.add_field(name="Unclaimed", value=str(unclaimed), inline=True)
-    embed.add_field(name="Claimed", value=str(len(assignments) - unclaimed), inline=True)
+    claimed_people = len(assignments)
+    embed.add_field(name="Unclaimed seats", value=str(unclaimed), inline=True)
+    embed.add_field(name="People assigned", value=str(claimed_people), inline=True)
     embed.set_footer(text=f"Board ID: {board.id} • /split • /assign • /claim • /board end")
     return embed
 
@@ -233,7 +249,6 @@ def create_bot(
         seat: str,
         member: discord.Member,
         notes: str = "",
-        overwrite: bool = True,
     ) -> None:
         if member.bot:
             raise ValueError("You cannot assign a seat to a bot.")
@@ -244,7 +259,6 @@ def create_bot(
             username=str(member),
             assigned_at=utc_now(),
             notes=notes,
-            overwrite=overwrite,
         )
 
     @bot.tree.command(name="login", description="Record your login time and start an attendance session.")
@@ -500,10 +514,10 @@ def create_bot(
         embed.add_field(
             name="How to use",
             value=(
-                "Assign 3 at once: `/assign seat1:Mantis user1:@A seat2:Zendesk user2:@B seat3:SalesIQ user3:@C`\n"
-                "Or by name: `/split mantis:@A zendesk:@B salesiq:@C`\n"
-                "Self pick-up: `/claim seat:Mantis`\n"
-                "Free a seat: `/release seat:Mantis`\n"
+                "Assign many: `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Zendesk user3:@C`\n"
+                "Or by name: `/split mantis:@A zendesk:@B` (add more with `/assign` / `/claim`)\n"
+                "Join a seat: `/claim seat:Mantis`\n"
+                "Leave a seat: `/release seat:Mantis`\n"
                 "Show: `/board show` · End: `/board end`"
             ),
             inline=False,
@@ -628,7 +642,6 @@ def create_bot(
                     board_id=board.id,
                     seat=seat_name,
                     member=member,
-                    overwrite=True,
                 )
                 mentions.append(f"**{seat_name}** → {member.mention}")
             assignments = bot.database.list_work_assignments(board.id)
@@ -654,14 +667,14 @@ def create_bot(
 
     @bot.tree.command(
         name="assign",
-        description="Assign up to 3 seats to 3 people in one command.",
+        description="Assign seats to people (same seat can go to multiple people).",
     )
     @app_commands.describe(
         seat1="First seat, e.g. Mantis",
         user1="Person for seat 1",
-        seat2="Second seat, e.g. Zendesk (optional)",
+        seat2="Second seat (can be the same as seat1)",
         user2="Person for seat 2 (optional)",
-        seat3="Third seat, e.g. SalesIQ (optional)",
+        seat3="Third seat (can be the same as seat1/seat2)",
         user3="Person for seat 3 (optional)",
         notes="Optional note applied to all assignments in this command",
     )
@@ -698,7 +711,7 @@ def create_bot(
             return
 
         planned: list[tuple[str, discord.Member]] = []
-        seen_seats: set[str] = set()
+        seen_pairs: set[tuple[str, int]] = set()
 
         for index, (seat_raw, member) in enumerate(pairs, start=1):
             seat_text = (seat_raw or "").strip()
@@ -735,24 +748,24 @@ def create_bot(
                 )
                 return
 
-            key = resolved.casefold()
-            if key in seen_seats:
+            pair_key = (resolved.casefold(), member.id)
+            if pair_key in seen_pairs:
                 await interaction.response.send_message(
                     embed=error_embed(
-                        "Duplicate Seat",
-                        f"You listed **{resolved}** more than once in the same command.",
+                        "Duplicate Assignment",
+                        f"{member.mention} is listed twice for **{resolved}** in this command.",
                     ),
                     ephemeral=True,
                 )
                 return
-            seen_seats.add(key)
+            seen_pairs.add(pair_key)
             planned.append((resolved, member))
 
         if not planned:
             await interaction.response.send_message(
                 embed=error_embed(
                     "Nothing To Assign",
-                    "Example: `/assign seat1:Mantis user1:@A seat2:Zendesk user2:@B seat3:SalesIQ user3:@C`",
+                    "Example: `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Zendesk user3:@C`",
                 ),
                 ephemeral=True,
             )
@@ -767,7 +780,6 @@ def create_bot(
                     seat=seat_name,
                     member=member,
                     notes=notes,
-                    overwrite=True,
                 )
                 mentions.append(f"**{seat_name}** → {member.mention}")
             assignments = bot.database.list_work_assignments(board.id)
@@ -791,7 +803,7 @@ def create_bot(
             embed=embed,
         )
 
-    @bot.tree.command(name="claim", description="Claim an open seat for yourself.")
+    @bot.tree.command(name="claim", description="Join a seat (others can already be on it).")
     @app_commands.describe(seat="Seat to claim, e.g. Mantis or Zendesk", notes="Optional note")
     @app_commands.autocomplete(seat=seat_autocomplete)
     async def claim(interaction: discord.Interaction, seat: str, notes: str = "") -> None:
@@ -820,7 +832,6 @@ def create_bot(
                 username=str(interaction.user),
                 assigned_at=utc_now(),
                 notes=notes,
-                overwrite=False,
             )
             assignments = bot.database.list_work_assignments(board.id)
         except ValueError as exc:
@@ -839,14 +850,21 @@ def create_bot(
 
         embed = build_board_embed(board, assignments)
         await interaction.response.send_message(
-            content=f"{interaction.user.mention} claimed **{resolved}**.",
+            content=f"{interaction.user.mention} joined **{resolved}**.",
             embed=embed,
         )
 
-    @bot.tree.command(name="release", description="Release a seat on the active work board.")
-    @app_commands.describe(seat="Seat to release, e.g. Mantis")
+    @bot.tree.command(name="release", description="Remove yourself (or someone) from a seat.")
+    @app_commands.describe(
+        seat="Seat to leave, e.g. Mantis",
+        user="Optional: remove this person instead of yourself",
+    )
     @app_commands.autocomplete(seat=seat_autocomplete)
-    async def release(interaction: discord.Interaction, seat: str) -> None:
+    async def release(
+        interaction: discord.Interaction,
+        seat: str,
+        user: discord.Member | None = None,
+    ) -> None:
         assert interaction.user is not None
 
         if not await ensure_shift_log_channel(interaction):
@@ -863,9 +881,21 @@ def create_bot(
             )
             return
 
+        target = user or interaction.user
+        if target.bot:
+            await interaction.response.send_message(
+                embed=error_embed("Invalid User", "Bots cannot be on the work board."),
+                ephemeral=True,
+            )
+            return
+
         try:
             board = require_active_board()
-            bot.database.release_work_seat(board_id=board.id, seat=resolved)
+            bot.database.release_work_seat(
+                board_id=board.id,
+                seat=resolved,
+                user_id=target.id,
+            )
             assignments = bot.database.list_work_assignments(board.id)
         except ValueError as exc:
             await interaction.response.send_message(
@@ -882,18 +912,20 @@ def create_bot(
             return
 
         embed = build_board_embed(board, assignments)
-        await interaction.response.send_message(
-            content=f"**{resolved}** is now unclaimed.",
-            embed=embed,
-        )
+        remaining = bot.database.list_seat_assignments(board.id, resolved)
+        if remaining:
+            status = f"{target.mention} left **{resolved}**."
+        else:
+            status = f"{target.mention} left **{resolved}** — seat is now unclaimed."
+        await interaction.response.send_message(content=status, embed=embed)
 
     @bot.tree.command(
         name="reassign",
-        description="Move one seat to someone else.",
+        description="Add someone to a seat (same as one /assign pair).",
     )
     @app_commands.describe(
         seat="Seat to assign, e.g. Zendesk",
-        user="Teammate who should own this seat",
+        user="Teammate to add on this seat",
         notes="Optional note",
     )
     @app_commands.autocomplete(seat=seat_autocomplete)

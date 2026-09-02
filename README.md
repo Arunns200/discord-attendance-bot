@@ -138,11 +138,13 @@ When multiple people share a shift, start a board so Discord shows who owns each
 
 1. `/board start label:Night shift`
 2. Either:
-   - **3 people at once:** `/assign seat1:Mantis user1:@A seat2:Zendesk user2:@B seat3:SalesIQ user3:@C`
-   - **By seat name:** `/split mantis:@A zendesk:@B salesiq:@C` (leave blank for open seats)
-   - **Self pick-up:** `/claim seat:Mantis`
-3. Free a seat with `/release seat:Mantis` if someone needs to switch
+   - **Same seat, multiple people:** `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Mantis user3:@C`
+   - **By seat name:** `/split mantis:@A zendesk:@B` (then add more with `/assign` or `/claim`)
+   - **Self join:** `/claim seat:Mantis` (works even if someone is already on it)
+3. Leave with `/release seat:Mantis` (or `/release seat:Mantis user:@other`)
 4. `/board show` anytime · `/board end` when the shift is over
+
+A seat can have as many people as you need — run `/assign` or `/claim` again to add more.
 
 Seat names come from `BOARD_SEATS`. Changing that env var affects **new** boards only.
 

@@ -46,6 +46,7 @@ class WorkBoard:
     label: str
     started_at: datetime
     ended_at: datetime | None = None
+    seats: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +54,8 @@ class WorkAssignment:
     id: int
     board_id: int
     seat: str
-    user_id: int | None
-    username: str | None
+    user_id: int
+    username: str
     notes: str
     assigned_at: datetime | None
 
@@ -147,11 +148,20 @@ class AttendanceDatabase:
                     started_by_user_id INTEGER NOT NULL,
                     started_by_username TEXT NOT NULL,
                     label TEXT NOT NULL DEFAULT '',
+                    seats_csv TEXT NOT NULL DEFAULT '',
                     started_at TEXT NOT NULL,
                     ended_at TEXT
                 )
                 """
             )
+            board_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(work_boards)").fetchall()
+            }
+            if "seats_csv" not in board_columns:
+                conn.execute(
+                    "ALTER TABLE work_boards ADD COLUMN seats_csv TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_work_boards_active
@@ -164,22 +174,114 @@ class AttendanceDatabase:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     board_id INTEGER NOT NULL,
                     seat TEXT NOT NULL,
-                    user_id INTEGER,
-                    username TEXT,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL,
                     notes TEXT NOT NULL DEFAULT '',
                     assigned_at TEXT,
-                    UNIQUE (board_id, seat),
+                    UNIQUE (board_id, seat, user_id),
                     FOREIGN KEY (board_id) REFERENCES work_boards (id)
                 )
                 """
             )
+            self._migrate_work_assignments_multi_user(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_work_assignments_board
                 ON work_assignments (board_id)
                 """
             )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_work_assignments_board_seat
+                ON work_assignments (board_id, seat)
+                """
+            )
         logger.info("Database ready at %s", self.db_path)
+
+    def _migrate_work_assignments_multi_user(self, conn: sqlite3.Connection) -> None:
+        """Allow many people on the same seat (drop old UNIQUE board_id+seat)."""
+        table = conn.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'table' AND name = 'work_assignments'
+            """
+        ).fetchone()
+        if table is None or table["sql"] is None:
+            return
+
+        create_sql = table["sql"]
+        has_multi_user_unique = (
+            "UNIQUE (board_id, seat, user_id)" in create_sql
+            or "UNIQUE(board_id, seat, user_id)" in create_sql
+        )
+        has_legacy_seat_unique = (
+            not has_multi_user_unique
+            and (
+                "UNIQUE (board_id, seat)" in create_sql
+                or "UNIQUE(board_id, seat)" in create_sql
+            )
+        )
+        has_nullable_user = "user_id INTEGER," in create_sql  # legacy placeholders
+        if has_multi_user_unique and not has_nullable_user:
+            return
+        if not has_legacy_seat_unique and not has_nullable_user:
+            return
+
+        logger.info("Migrating work_assignments to allow multiple people per seat")
+        conn.execute("ALTER TABLE work_assignments RENAME TO work_assignments_legacy")
+        conn.execute(
+            """
+            CREATE TABLE work_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                board_id INTEGER NOT NULL,
+                seat TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                assigned_at TEXT,
+                UNIQUE (board_id, seat, user_id),
+                FOREIGN KEY (board_id) REFERENCES work_boards (id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO work_assignments (
+                board_id, seat, user_id, username, notes, assigned_at
+            )
+            SELECT board_id, seat, user_id, username, COALESCE(notes, ''), assigned_at
+            FROM work_assignments_legacy
+            WHERE user_id IS NOT NULL
+            """
+        )
+        # Backfill seats_csv for boards that only had placeholder rows.
+        boards = conn.execute("SELECT id, seats_csv FROM work_boards").fetchall()
+        for board in boards:
+            if board["seats_csv"]:
+                continue
+            seat_rows = conn.execute(
+                """
+                SELECT DISTINCT seat FROM work_assignments_legacy
+                WHERE board_id = ?
+                ORDER BY id ASC
+                """,
+                (board["id"],),
+            ).fetchall()
+            if not seat_rows:
+                seat_rows = conn.execute(
+                    """
+                    SELECT DISTINCT seat FROM work_assignments
+                    WHERE board_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (board["id"],),
+                ).fetchall()
+            seats_csv = ",".join(row["seat"] for row in seat_rows)
+            conn.execute(
+                "UPDATE work_boards SET seats_csv = ? WHERE id = ?",
+                (seats_csv, board["id"]),
+            )
+        conn.execute("DROP TABLE work_assignments_legacy")
 
     @staticmethod
     def _parse_timestamp(value: str) -> datetime:
@@ -230,6 +332,12 @@ class AttendanceDatabase:
         )
 
     def _row_to_work_board(self, row: sqlite3.Row) -> WorkBoard:
+        seats_csv = ""
+        if "seats_csv" in row.keys() and row["seats_csv"]:
+            seats_csv = row["seats_csv"]
+        seats = tuple(
+            part.strip() for part in seats_csv.split(",") if part.strip()
+        )
         return WorkBoard(
             id=row["id"],
             started_by_user_id=row["started_by_user_id"],
@@ -241,6 +349,7 @@ class AttendanceDatabase:
                 if row["ended_at"] is not None
                 else None
             ),
+            seats=seats,
         )
 
     def _row_to_work_assignment(self, row: sqlite3.Row) -> WorkAssignment:
@@ -459,7 +568,7 @@ class AttendanceDatabase:
         with self._connection() as conn:
             row = conn.execute(
                 """
-                SELECT id, started_by_user_id, started_by_username, label, started_at, ended_at
+                SELECT id, started_by_user_id, started_by_username, label, seats_csv, started_at, ended_at
                 FROM work_boards
                 WHERE ended_at IS NULL
                 ORDER BY started_at DESC
@@ -467,6 +576,18 @@ class AttendanceDatabase:
                 """
             ).fetchone()
         return self._row_to_work_board(row) if row else None
+
+    def resolve_board_seat(self, board: WorkBoard, seat: str) -> str | None:
+        target = seat.strip().casefold()
+        seats = board.seats
+        if not seats:
+            # Legacy boards: accept any seat already used, or fall through.
+            assignments = self.list_work_assignments(board.id)
+            seats = tuple(dict.fromkeys(a.seat for a in assignments))
+        for configured in seats:
+            if configured.casefold() == target:
+                return configured
+        return None
 
     def start_work_board(
         self,
@@ -495,6 +616,7 @@ class AttendanceDatabase:
         if not cleaned_seats:
             raise ValueError("No seats configured. Set BOARD_SEATS in the environment.")
 
+        seats_csv = ",".join(cleaned_seats)
         with self._connection() as conn:
             cursor = conn.execute(
                 """
@@ -502,28 +624,23 @@ class AttendanceDatabase:
                     started_by_user_id,
                     started_by_username,
                     label,
+                    seats_csv,
                     started_at
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     started_by_user_id,
                     started_by_username,
                     label.strip(),
+                    seats_csv,
                     self._format_timestamp(started_at),
                 ),
             )
             board_id = cursor.lastrowid
-            conn.executemany(
-                """
-                INSERT INTO work_assignments (board_id, seat, user_id, username, notes, assigned_at)
-                VALUES (?, ?, NULL, NULL, '', NULL)
-                """,
-                [(board_id, seat) for seat in cleaned_seats],
-            )
             row = conn.execute(
                 """
-                SELECT id, started_by_user_id, started_by_username, label, started_at, ended_at
+                SELECT id, started_by_user_id, started_by_username, label, seats_csv, started_at, ended_at
                 FROM work_boards
                 WHERE id = ?
                 """,
@@ -553,7 +670,7 @@ class AttendanceDatabase:
             )
             row = conn.execute(
                 """
-                SELECT id, started_by_user_id, started_by_username, label, started_at, ended_at
+                SELECT id, started_by_user_id, started_by_username, label, seats_csv, started_at, ended_at
                 FROM work_boards
                 WHERE id = ?
                 """,
@@ -580,15 +697,20 @@ class AttendanceDatabase:
             ).fetchall()
         return [self._row_to_work_assignment(row) for row in rows]
 
-    def get_work_assignment(self, board_id: int, seat: str) -> WorkAssignment | None:
+    def get_work_assignment(
+        self,
+        board_id: int,
+        seat: str,
+        user_id: int,
+    ) -> WorkAssignment | None:
         with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT id, board_id, seat, user_id, username, notes, assigned_at
                 FROM work_assignments
-                WHERE board_id = ?
+                WHERE board_id = ? AND user_id = ?
                 """,
-                (board_id,),
+                (board_id, user_id),
             ).fetchall()
 
         target = seat.strip().casefold()
@@ -596,6 +718,14 @@ class AttendanceDatabase:
             if row["seat"].casefold() == target:
                 return self._row_to_work_assignment(row)
         return None
+
+    def list_seat_assignments(self, board_id: int, seat: str) -> list[WorkAssignment]:
+        target = seat.strip().casefold()
+        return [
+            assignment
+            for assignment in self.list_work_assignments(board_id)
+            if assignment.seat.casefold() == target
+        ]
 
     def assign_work_seat(
         self,
@@ -606,40 +736,73 @@ class AttendanceDatabase:
         username: str,
         assigned_at: datetime,
         notes: str = "",
-        overwrite: bool = False,
+        allow_duplicate: bool = False,
     ) -> WorkAssignment:
-        assignment = self.get_work_assignment(board_id, seat)
-        if assignment is None:
-            raise ValueError(f"Unknown seat `{seat}`.")
-
-        if assignment.user_id is not None and assignment.user_id != user_id and not overwrite:
-            raise ValueError(
-                f"`{assignment.seat}` is already claimed by {assignment.username}. "
-                "Use `/reassign` to move it, or `/release` first."
-            )
-
+        board = None
         with self._connection() as conn:
-            conn.execute(
+            board_row = conn.execute(
                 """
-                UPDATE work_assignments
-                SET user_id = ?, username = ?, notes = ?, assigned_at = ?
+                SELECT id, started_by_user_id, started_by_username, label, seats_csv, started_at, ended_at
+                FROM work_boards
                 WHERE id = ?
                 """,
-                (
-                    user_id,
-                    username,
-                    notes.strip(),
-                    self._format_timestamp(assigned_at),
-                    assignment.id,
-                ),
-            )
+                (board_id,),
+            ).fetchone()
+        if board_row is None:
+            raise ValueError("Work board not found.")
+        board = self._row_to_work_board(board_row)
+
+        resolved = self.resolve_board_seat(board, seat)
+        if resolved is None:
+            available = ", ".join(board.seats) if board.seats else "(none)"
+            raise ValueError(f"Unknown seat `{seat}`. Seats on this board: {available}")
+
+        existing = self.get_work_assignment(board_id, resolved, user_id)
+        if existing is not None and not allow_duplicate:
+            raise ValueError(f"{username} is already on `{resolved}`.")
+
+        with self._connection() as conn:
+            if existing is not None:
+                conn.execute(
+                    """
+                    UPDATE work_assignments
+                    SET username = ?, notes = ?, assigned_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        username,
+                        notes.strip(),
+                        self._format_timestamp(assigned_at),
+                        existing.id,
+                    ),
+                )
+                assignment_id = existing.id
+            else:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO work_assignments (
+                        board_id, seat, user_id, username, notes, assigned_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        board_id,
+                        resolved,
+                        user_id,
+                        username,
+                        notes.strip(),
+                        self._format_timestamp(assigned_at),
+                    ),
+                )
+                assignment_id = cursor.lastrowid
+
             row = conn.execute(
                 """
                 SELECT id, board_id, seat, user_id, username, notes, assigned_at
                 FROM work_assignments
                 WHERE id = ?
                 """,
-                (assignment.id,),
+                (assignment_id,),
             ).fetchone()
 
         if row is None:
@@ -654,34 +817,24 @@ class AttendanceDatabase:
         )
         return updated
 
-    def release_work_seat(self, *, board_id: int, seat: str) -> WorkAssignment:
-        assignment = self.get_work_assignment(board_id, seat)
+    def release_work_seat(
+        self,
+        *,
+        board_id: int,
+        seat: str,
+        user_id: int,
+    ) -> WorkAssignment:
+        assignment = self.get_work_assignment(board_id, seat, user_id)
         if assignment is None:
-            raise ValueError(f"Unknown seat `{seat}`.")
-        if assignment.user_id is None:
-            raise ValueError(f"`{assignment.seat}` is already unclaimed.")
+            raise ValueError(f"That person is not assigned to `{seat}`.")
 
         with self._connection() as conn:
-            conn.execute(
-                """
-                UPDATE work_assignments
-                SET user_id = NULL, username = NULL, notes = '', assigned_at = NULL
-                WHERE id = ?
-                """,
-                (assignment.id,),
-            )
-            row = conn.execute(
-                """
-                SELECT id, board_id, seat, user_id, username, notes, assigned_at
-                FROM work_assignments
-                WHERE id = ?
-                """,
-                (assignment.id,),
-            ).fetchone()
+            conn.execute("DELETE FROM work_assignments WHERE id = ?", (assignment.id,))
 
-        if row is None:
-            raise RuntimeError("Failed to release work assignment.")
-
-        updated = self._row_to_work_assignment(row)
-        logger.info("Released seat %s on board %s", updated.seat, board_id)
-        return updated
+        logger.info(
+            "Released seat %s on board %s for user %s",
+            assignment.seat,
+            board_id,
+            user_id,
+        )
+        return assignment
