@@ -134,14 +134,24 @@ In your server, type `/` and run:
 
 ### Shift work board
 
-No `/board start` needed — use `/assign` directly:
+**One seat, multiple people with times:**
 
-1. **Required:** pick `seat1` + `user1` from the dropdown lists
-2. **Optional:** expand **+ more** for `seat2`/`user2`, `seat3`/`user3`, and times
-3. **Times:** pick `from1`/`to1` etc. from the list (hourly, IST). Leave blank if not needed.
-4. `/claim`, `/release`, `/board show`, `/board end` as needed
+```
+/assign
+  seat: Mantis
+  user1: @Chandan   from1: 01:00 IST   to1: 02:00 IST
+  user2: @Arun      from2: 02:00 IST   to2: 04:00 IST
+  user3: @Pavan     from3: 04:00 IST   to3: 08:00 IST
+```
 
-**Tips:** Leave optional fields empty — only open them if you need them. Same seat can have multiple people with different time slots.
+**Different seat?** Run `/assign` again with `seat: Zendesk` (or SalesIQ, etc.).
+
+- `/claim seat:Mantis` — join a seat yourself with optional times
+- `/release seat:Mantis` — leave a seat
+- `/board show` — see current board
+- `/board end` — reset for new shift
+
+Leave optional user/time fields empty if you don't need them.
 
 All user-facing timestamps are shown in **IST** (Asia/Kolkata). Data is stored in UTC internally for consistency.
 
