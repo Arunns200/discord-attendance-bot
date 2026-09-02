@@ -128,7 +128,7 @@ In your server, type `/` and run:
 | `DISCORD_TOKEN` | Yes | Discord bot token |
 | `DISCORD_GUILD_ID` | Recommended | Guild ID for instant slash command sync |
 | `DISCORD_SHIFT_LOG_CHANNEL_ID` | Recommended | Lock attendance + board commands to one channel |
-| `BOARD_SEATS` | No | Comma-separated seats (default: `Mantis,Zendesk,SalesIQ,Escalations`) |
+| `BOARD_SEATS` | No | Comma-separated seats (default: `Mantis,Zendesk,Chats,Discord`) |
 | `DATABASE_PATH` | No | SQLite file path (default: `data/attendance.db` locally, `/app/data/attendance.db` on Railway) |
 | `LOG_LEVEL` | No | Logging level (default: `INFO`) |
 
@@ -147,7 +147,7 @@ seat3: Mantis   user3: @Pavan     from3: 04:00   to3: 08:00
 ```
 seat1: Mantis   user1: @Arun
 seat2: Zendesk  user2: @Chandan
-seat3: SalesIQ  user3: @Pavan
+seat3: Chats  user3: @Pavan
 ```
 
 - `/claim` — join a seat yourself

@@ -38,7 +38,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DISCORD_SHIFT_LOG_CHANNEL_ID = os.getenv("DISCORD_SHIFT_LOG_CHANNEL_ID")
 DATABASE_PATH = str(default_database_path())
-DEFAULT_BOARD_SEATS = ("Mantis", "Zendesk", "SalesIQ", "Escalations")
+DEFAULT_BOARD_SEATS = ("Mantis", "Zendesk", "Chats", "Discord")
 
 EMBED_COLOR_LOGIN = discord.Color.green()
 EMBED_COLOR_LOGOUT = discord.Color.red()
@@ -642,15 +642,15 @@ def create_bot(
     @app_commands.describe(
         mantis="Who should work Mantis",
         zendesk="Who should work Zendesk",
-        salesiq="Who should work SalesIQ",
-        escalations="Who should work Escalations",
+        chats="Who should work Chats",
+        discord_seat="Who should work Discord",
     )
     async def split(
         interaction: discord.Interaction,
         mantis: discord.Member | None = None,
         zendesk: discord.Member | None = None,
-        salesiq: discord.Member | None = None,
-        escalations: discord.Member | None = None,
+        chats: discord.Member | None = None,
+        discord_seat: discord.Member | None = None,
     ) -> None:
         assert interaction.user is not None
 
@@ -661,8 +661,8 @@ def create_bot(
         for seat_name, member in (
             ("Mantis", mantis),
             ("Zendesk", zendesk),
-            ("SalesIQ", salesiq),
-            ("Escalations", escalations),
+            ("Chats", chats),
+            ("Discord", discord_seat),
         ):
             if member is None:
                 continue
