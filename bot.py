@@ -145,7 +145,7 @@ def build_board_embed(
     claimed_people = len(assignments)
     embed.add_field(name="Unclaimed seats", value=str(unclaimed), inline=True)
     embed.add_field(name="People assigned", value=str(claimed_people), inline=True)
-    embed.set_footer(text=f"Board ID: {board.id} • /split • /assign • /claim • /board end")
+    embed.set_footer(text=f"Board ID: {board.id} • /assign • /claim • /release • /board show")
     return embed
 
 
@@ -237,11 +237,14 @@ def create_bot(
                 break
         return choices
 
-    def require_active_board():
-        board = bot.database.get_active_work_board()
-        if board is None:
-            raise ValueError("No active work board. Start one with `/board start`.")
-        return board
+    def ensure_work_board(interaction: discord.Interaction) -> WorkBoard:
+        assert interaction.user is not None
+        return bot.database.get_or_create_active_work_board(
+            started_by_user_id=interaction.user.id,
+            started_by_username=str(interaction.user),
+            seats=bot.board_seats,
+            started_at=utc_now(),
+        )
 
     def assign_member_to_seat(
         *,
@@ -479,7 +482,7 @@ def create_bot(
         description="Shift work board — who owns Mantis, Zendesk, and other seats.",
     )
 
-    @board_group.command(name="start", description="Start a new shift work board with unclaimed seats.")
+    @board_group.command(name="start", description="Optional: start a fresh board (not required — /assign and /claim work directly).")
     @app_commands.describe(label="Optional label, e.g. Night shift or 27 Aug evening")
     async def board_start(interaction: discord.Interaction, label: str = "") -> None:
         assert interaction.user is not None
@@ -488,6 +491,16 @@ def create_bot(
             return
 
         try:
+            existing = bot.database.get_active_work_board()
+            if existing is not None:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Board Already Active",
+                        "A board is already running. Use `/board end` to reset, or just `/assign` / `/claim`.",
+                    ),
+                    ephemeral=True,
+                )
+                return
             board = bot.database.start_work_board(
                 started_by_user_id=interaction.user.id,
                 started_by_username=str(interaction.user),
@@ -498,7 +511,7 @@ def create_bot(
             assignments = bot.database.list_work_assignments(board.id)
         except ValueError as exc:
             await interaction.response.send_message(
-                embed=error_embed("Board Already Active", str(exc)),
+                embed=error_embed("Board Start Failed", str(exc)),
                 ephemeral=True,
             )
             return
@@ -514,32 +527,20 @@ def create_bot(
         embed.add_field(
             name="How to use",
             value=(
-                "Assign many: `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Zendesk user3:@C`\n"
-                "Or by name: `/split mantis:@A zendesk:@B` (add more with `/assign` / `/claim`)\n"
-                "Join a seat: `/claim seat:Mantis`\n"
-                "Leave a seat: `/release seat:Mantis`\n"
-                "Show: `/board show` · End: `/board end`"
+                "`/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Zendesk user3:@C`\n"
+                "`/claim seat:Mantis` · `/release seat:Mantis` · `/board show` · `/board end`"
             ),
             inline=False,
         )
         await interaction.response.send_message(embed=embed)
 
-    @board_group.command(name="show", description="Show the current shift work board.")
+    @board_group.command(name="show", description="Show who is on each seat right now.")
     async def board_show(interaction: discord.Interaction) -> None:
         if not await ensure_shift_log_channel(interaction):
             return
 
         try:
-            board = bot.database.get_active_work_board()
-            if board is None:
-                await interaction.response.send_message(
-                    embed=error_embed(
-                        "No Active Board",
-                        "There is no active work board. Start one with `/board start`.",
-                    ),
-                    ephemeral=True,
-                )
-                return
+            board = ensure_work_board(interaction)
             assignments = bot.database.list_work_assignments(board.id)
         except Exception:
             logger.exception("Failed to load work board")
@@ -635,7 +636,7 @@ def create_bot(
             return
 
         try:
-            board = require_active_board()
+            board = ensure_work_board(interaction)
             mentions: list[str] = []
             for seat_name, member in planned:
                 assign_member_to_seat(
@@ -772,7 +773,7 @@ def create_bot(
             return
 
         try:
-            board = require_active_board()
+            board = ensure_work_board(interaction)
             mentions: list[str] = []
             for seat_name, member in planned:
                 assign_member_to_seat(
@@ -824,7 +825,7 @@ def create_bot(
             return
 
         try:
-            board = require_active_board()
+            board = ensure_work_board(interaction)
             bot.database.assign_work_seat(
                 board_id=board.id,
                 seat=resolved,
@@ -890,7 +891,7 @@ def create_bot(
             return
 
         try:
-            board = require_active_board()
+            board = ensure_work_board(interaction)
             bot.database.release_work_seat(
                 board_id=board.id,
                 seat=resolved,

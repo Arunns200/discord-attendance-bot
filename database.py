@@ -654,6 +654,26 @@ class AttendanceDatabase:
         logger.info("Started work board %s with seats %s", board.id, cleaned_seats)
         return board
 
+    def get_or_create_active_work_board(
+        self,
+        *,
+        started_by_user_id: int,
+        started_by_username: str,
+        seats: list[str],
+        started_at: datetime,
+        label: str = "",
+    ) -> WorkBoard:
+        existing = self.get_active_work_board()
+        if existing is not None:
+            return existing
+        return self.start_work_board(
+            started_by_user_id=started_by_user_id,
+            started_by_username=started_by_username,
+            seats=seats,
+            started_at=started_at,
+            label=label,
+        )
+
     def end_work_board(self, ended_at: datetime) -> WorkBoard:
         active = self.get_active_work_board()
         if active is None:

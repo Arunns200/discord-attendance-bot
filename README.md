@@ -134,19 +134,14 @@ In your server, type `/` and run:
 
 ### Shift work board
 
-When multiple people share a shift, start a board so Discord shows who owns each queue:
+No `/board start` needed — just assign directly:
 
-1. `/board start label:Night shift`
-2. Either:
-   - **Same seat, multiple people:** `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Mantis user3:@C`
-   - **By seat name:** `/split mantis:@A zendesk:@B` (then add more with `/assign` or `/claim`)
-   - **Self join:** `/claim seat:Mantis` (works even if someone is already on it)
-3. Leave with `/release seat:Mantis` (or `/release seat:Mantis user:@other`)
-4. `/board show` anytime · `/board end` when the shift is over
+1. `/assign seat1:Mantis user1:@A seat2:Mantis user2:@B seat3:Mantis user3:@C`
+2. `/claim seat:Mantis` to join a seat yourself
+3. `/release seat:Mantis` to leave · `/release seat:Mantis user:@other` to remove someone
+4. `/board show` to see current assignments · `/board end` to reset for a new shift
 
-A seat can have as many people as you need — run `/assign` or `/claim` again to add more.
-
-Seat names come from `BOARD_SEATS`. Changing that env var affects **new** boards only.
+The same seat can have multiple people. Run `/assign` or `/claim` again to add more.
 
 All user-facing timestamps are shown in **IST** (Asia/Kolkata). Data is stored in UTC internally for consistency.
 
